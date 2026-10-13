@@ -1,0 +1,125 @@
+name: 打包标签打印程序
+
+# 仅允许手动触发（一键打包）；提交代码不会产生任何工作流运行
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（如 1.0.3；留空则自动在 version.txt 基础上迭代修订号）"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write      # 回写版本号
+  actions: write       # 清理历史运行记录
+  packages: none
+
+jobs:
+  build:
+    runs-on: windows-2022    # GitHub Actions Windows Server 2022
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # ---------- 版本号：手动指定优先，否则自动迭代 ----------
+      - name: 计算版本号
+        shell: pwsh
+        run: |
+          $inputVer = "${{ inputs.version }}".Trim()
+          if ($inputVer -match '^\d+\.\d+\.\d+$') {
+              $ver = $inputVer
+          } else {
+              $cur = (Get-Content version.txt -Raw).Trim()
+              $parts = $cur.Split('.')
+              $parts[2] = [string]([int]$parts[2] + 1)
+              $ver = $parts -join '.'
+          }
+          echo "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "本次打包版本：$ver"
+
+      - name: 写入版本号到源码与文件版本信息
+        shell: pwsh
+        run: |
+          $ver = $env:VERSION
+          (Get-Content app/version.py -Raw -Encoding utf8) -replace 'VERSION = "[^"]+"', "VERSION = `"$ver`"" |
+              Set-Content app/version.py -Encoding utf8 -NoNewline
+          $ver | Set-Content version.txt -Encoding utf8 -NoNewline
+          $comma = ($ver.Split('.') -join ', ') + ', 0'
+          $fvi = Get-Content file_version_info.txt -Raw -Encoding utf8
+          $fvi = $fvi -replace 'filevers=\([^)]+\)', "filevers=($comma)"
+          $fvi = $fvi -replace 'prodvers=\([^)]+\)', "prodvers=($comma)"
+          $fvi = $fvi -replace "FileVersion', u'[^']+'", "FileVersion', u'$ver.0'"
+          $fvi = $fvi -replace "ProductVersion', u'[^']+'", "ProductVersion', u'$ver.0'"
+          $fvi | Set-Content file_version_info.txt -Encoding utf8 -NoNewline
+
+      # ---------- Python 3.8 x86（Win7 兼容） ----------
+      - name: 安装 Python 3.8 (x86)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+          architecture: "x86"
+
+      - name: 缓存 pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-${{ runner.os }}-py38-${{ hashFiles('requirements.txt') }}
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 生成图标资源
+        run: python tools/make_icons.py
+
+      - name: PyInstaller 打包
+        run: pyinstaller --clean --noconfirm 标签打印.spec
+
+      - name: 压缩打包产物
+        shell: pwsh
+        run: |
+          $ver = $env:VERSION
+          Compress-Archive -Path "dist\标签打印\*" -DestinationPath "标签打印_v${ver}.zip" -Force
+
+      - name: 上传产物（Artifact v4）
+        uses: actions/upload-artifact@v4
+        with:
+          name: 标签打印_v${{ env.VERSION }}
+          path: 标签打印_v${{ env.VERSION }}.zip
+          retention-days: 30
+          if-no-files-found: error
+
+      # ---------- 回写版本号到仓库 ----------
+      - name: 提交版本号变更
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add version.txt app/version.py file_version_info.txt
+          git diff --cached --quiet; if ($LASTEXITCODE -ne 0) {
+              git commit -m "chore: bump version to $env:VERSION [skip ci]"
+              git push
+          } else {
+              Write-Host "版本号无变化，跳过提交"
+          }
+
+      # ---------- 只保留最新 2 条本工作流的运行记录 ----------
+      - name: 清理历史运行记录（保留最新 2 条）
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $repo = "${{ github.repository }}"
+          $wfId = "${{ github.workflow_ref }}".Split('@')[0].Split('/')[-1]
+          $runs = gh run list --repo $repo --workflow $wfId --limit 100 --json databaseId,createdAt |
+              ConvertFrom-Json | Sort-Object createdAt -Descending
+          $toDelete = $runs | Select-Object -Skip 2
+          foreach ($run in $toDelete) {
+              gh run delete $run.databaseId --repo $repo
+              Write-Host "已删除历史运行记录: $($run.databaseId)"
+          }
+          Write-Host "清理完成，共保留最新 2 条运行记录"
