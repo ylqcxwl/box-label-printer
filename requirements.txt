@@ -1,0 +1,7 @@
+# 运行依赖（Python 3.8.10 x86，兼容 Win7）
+PyQt5==5.15.10
+pywin32==306
+openpyxl==3.1.2
+
+# 打包依赖
+pyinstaller==5.13.2
