@@ -5,3 +5,8 @@ openpyxl==3.1.2
 
 # 打包依赖
 pyinstaller==5.13.2
+
+# 构建期依赖：tools/make_icons.py 生成 assets/logo.png / logo.ico 时用。
+# 程序运行时不依赖它（界面图标是 Qt 的 QPixmap 现画的），
+# 但 CI 里有「生成图标资源」这一步，缺了会直接 ModuleNotFoundError。
+Pillow==9.5.0
