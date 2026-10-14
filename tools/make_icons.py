@@ -4,9 +4,15 @@
 用法：python tools/make_icons.py
 """
 
+import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw
+
+# 标准输出强制 UTF-8：Windows 控制台默认是 cp1252/GBK，
+# 下面打印「已生成：…」这类中文时会抛 UnicodeEncodeError。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 ASSETS = Path(__file__).resolve().parent.parent / "assets"
 

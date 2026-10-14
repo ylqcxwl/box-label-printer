@@ -18,6 +18,11 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022    # GitHub Actions Windows Server 2022
+    env:
+      # Windows 运行器的标准输出默认是 cp1252，脚本一旦打印中文就会
+      # UnicodeEncodeError: 'charmap' codec can't encode characters。
+      # 统一改成 UTF-8，避免各步骤的输出编码问题。
+      PYTHONIOENCODING: utf-8
 
     steps:
       - name: 检出代码
