@@ -280,11 +280,22 @@ QHeaderView::section {
 }
 /* 产品表 / 字段映射表：选中态必须一眼可辨——
    默认的浅蓝底（#E5EEF9）在白底表格上几乎看不出来是哪一行被选中 */
-QTableWidget#productTable, QTableWidget#fieldTable {
+/* 打印页的「待选产品列表」同样用高对比选中态：
+   选中的那一行决定整个打印页的内容，必须一眼看得出来 */
+QTableWidget#productTable, QTableWidget#fieldTable,
+QTableWidget#printProductTable {
     selection-background-color: %(accent)s;
     selection-color: #FFFFFF;
 }
-QTableWidget#productTable::item:selected, QTableWidget#fieldTable::item:selected {
+QTableWidget#productTable::item:selected, QTableWidget#fieldTable::item:selected,
+QTableWidget#printProductTable::item:selected {
+    background: %(accent)s;
+    color: #FFFFFF;
+}
+/* 焦点移到搜索框/其它控件时，Qt 默认会把选中行画成灰色。
+   加上 :!active 让选中态不论有无焦点都保持蓝色 */
+QTableWidget#productTable::item:selected:!active,
+QTableWidget#printProductTable::item:selected:!active {
     background: %(accent)s;
     color: #FFFFFF;
 }
@@ -353,16 +364,20 @@ QPlainTextEdit#helpBox {
     color: #2A2E33;
     selection-background-color: %(accent)s;
 }
-QPushButton#previewBtn {
-    background: #FFFFFF;
-    border: 1px dashed #9AA3AE;
-    border-radius: 4px;
+/* 规则对话框「实时预览」：紧贴表达式下方，等宽字体、加粗，一眼看到渲染结果 */
+QLabel#livePreview {
+    background: #F7F9FB;
+    border: 1px solid #E3E6EB;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-family: "Consolas", "Microsoft YaHei", monospace;
+    font-size: 13px;
     color: %(text)s;
-    padding: 7px 0;
 }
-QPushButton#previewBtn:hover {
-    border-color: %(accent)s;
-    color: %(accent)s;
+/* 记录页操作提示：灰色小字，只起说明作用，不能抢视觉 */
+QLabel#recordHint {
+    color: #8A9099;
+    font-size: 12px;
 }
 /* 打印页「未打印草稿」提示：橙色系提示条，区别于错误红 */
 QLabel#draftHint {

@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from app.core import rules
 from app.core.records import RecordStore
+from app.core.bartender import template_name
 
 # 字段类别
 KIND_PRODUCT = 0    # 产品字段：在产品管理 / 打印页产品详情中出现，可随产品录入
@@ -102,7 +103,7 @@ SN_RULE_LEGACY_PATTERNS = {
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "factory_code": "2",
     "default_printer": "",
-    "template_dir": "",            # 空 = 程序根目录
+    "template_dir": "",            # 空 = 程序根目录下的 templates
     "delete_password": "123456",
     "auto_backup": False,
     "backup_time": "18:00",
@@ -446,6 +447,11 @@ class DB:
 
     def _save_product(self, data: Dict[str, Any]) -> Dict[str, Any]:
         clean = {k: v for k, v in data.items() if not k.startswith("_")}
+        # 模板名统一存「不带 .btw 后缀」的形式：
+        # 产品管理里只填文件名即可，打印时由 template_path() 补回后缀。
+        # 放在这一层做，界面录入和 Excel 批量导入才会都生效
+        if "template" in clean:
+            clean["template"] = template_name(str(clean["template"]))
         return clean
 
     def add_product(self, data: Dict[str, Any]) -> int:

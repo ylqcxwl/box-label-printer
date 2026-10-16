@@ -15,6 +15,8 @@ from PyQt5.QtWidgets import (QComboBox, QDialog, QDialogButtonBox,
                              QPushButton, QTableWidget, QTableWidgetItem,
                              QVBoxLayout, QWidget)
 
+from app.config import resolve_template_dir
+from app.core.bartender import template_name
 from app.core import excel_io, listconfig
 from app.core.db import DB
 from app.ui.table_util import freeze_widths
@@ -52,8 +54,14 @@ class ProductDialog(QDialog):
                 editor.addItem("")
                 for opt in self._options_for(fkey):
                     editor.addItem(opt)
+                if fkey == "template":
+                    # 模板只填文件名：下拉里也不带后缀，打印时自动补 .btw
+                    editor.setPlaceholderText("只填文件名，不用写 .btw")
+                    editor.setToolTip("例如模板是 t.btw，这里填 t 即可；"
+                                      "写了 .btw 也会自动处理")
                 if product:
-                    editor.setCurrentText(str(product.get(fkey, "")))
+                    editor.setCurrentText(
+                        template_name(str(product.get(fkey, ""))))
             else:
                 editor = QLineEdit(str(product.get(fkey, "")) if product else "")
             self.inputs[fkey] = editor
@@ -100,10 +108,13 @@ class ProductDialog(QDialog):
 
     def _options_for(self, fkey: str) -> List[str]:
         if fkey == "template":
-            from app.config import ROOT
-            template_dir = self.db.get_setting("template_dir") or str(ROOT)
+            from app.core.bartender import template_name
+            template_dir = resolve_template_dir(self.db.get_setting("template_dir"))
             try:
-                return sorted(p.name for p in Path(template_dir).glob("*.btw"))
+                # 下拉里只显示文件名：产品里填的名字不写后缀，
+                # 打印时由 template_path() 自动补 .btw
+                return sorted({template_name(p.name)
+                              for p in Path(template_dir).glob("*.btw")})
             except OSError:
                 return []
         if fkey == "sn_rule":
@@ -199,15 +210,27 @@ class ProductsPage(QWidget):
         for p in self._products:
             row = self.table.rowCount()
             self.table.insertRow(row)
-            for col, c in enumerate(self._columns):
-                cid = c["id"]
-                text = str(p["_id"]) if cid == "__id__" else str(p.get(
-                    listconfig.field_key(cid), ""))
+            for col, text in enumerate(self._row_values(p)):
                 self.table.setItem(row, col, QTableWidgetItem(text))
-        # 列宽固定：列结构不变时不再随搜索结果变化，避免表格“抖动”
-        freeze_widths(self.table, self._width_cache,
-                      signature=tuple(headers) + ("filter",), min_width=76,
-                      max_width=300, overrides={0: 56})
+        # 列宽按「全量产品」量，而不是当前筛选结果：
+        # 这样筛选、选中产品时列宽都锁定在最宽的那一版，不会忽长忽短。
+        # 只在列结构变化时查一次全量数据，避免每次输入都重查。
+        signature = tuple(headers) + ("all-products",)
+        measure = None
+        if self._width_cache.get("sig") != signature:
+            measure = [self._row_values(p) for p in self.db.list_products("")]
+        freeze_widths(self.table, self._width_cache, signature=signature,
+                      min_width=76, max_width=300, overrides={0: 56},
+                      measure_rows=measure)
+
+    def _row_values(self, product: Dict[str, Any]) -> List[str]:
+        """按当前列配置取出一个产品的各行文字（列宽测量与填表共用）。"""
+        values = []
+        for c in self._columns:
+            cid = c["id"]
+            values.append(str(product["_id"]) if cid == "__id__"
+                          else str(product.get(listconfig.field_key(cid), "")))
+        return values
 
     def _visible_columns(self) -> List[Dict[str, Any]]:
         cols = listconfig.visible_columns(self.db, "product_columns")
@@ -242,7 +265,11 @@ class ProductsPage(QWidget):
     # ================= 操作 =================
 
     def _add_product(self) -> None:
-        """新增产品：保存回调失败时对话框保持打开，方便就地修改 SN 前缀等字段。"""
+        """新增产品：保存回调失败时对话框保持打开，方便就地修改 SN 前缀等字段。
+
+        模板名只存文件名：去 .btw 后缀的活儿做在 DB 层
+        （`DB._save_product`），这样 Excel 批量导入也一并生效。
+        """
         dlg = ProductDialog(self.db, on_save=self.db.add_product, parent=self)
         if dlg.exec_() == QDialog.Accepted:
             self.reload()

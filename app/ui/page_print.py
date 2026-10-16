@@ -20,14 +20,16 @@ from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDateEdit, QFileDialog,
 
 from app.core import listconfig
 from app.core import rules as rule_engine
-from app.core.bartender import BarTender, PrintError
+from app.core.bartender import (BarTender, PrintError, resolve_printer,
+                               template_path as template_path_abs)
 from app.core.db import DB, KIND_PRINT
-from app.config import ROOT
+from app.config import resolve_template_dir
 
 DETAIL_COLS = [
     ["mingcheng", "guige", "xinghao", "yanse"],           # 第一列
     ["sn4", "sku", "code69", "shuliang"],                 # 第二列
-    ["sn_rule", "box_rule", "template"],                  # 第三列
+    # 第三列：末尾加上「重量」（需求：打印前要能看到这箱多重）
+    ["sn_rule", "box_rule", "template", "zhongliang"],
 ]
 PRODUCT_TABLE_COLS = ["mingcheng", "guige", "xinghao", "yanse", "sn4", "code69"]
 
@@ -99,6 +101,7 @@ class PrintPage(QWidget):
 
         # 列由「设置 - 列表设置 - 打印页产品列表」决定，首次填充时按配置生成表头
         self.product_table = QTableWidget(0, len(PRODUCT_TABLE_COLS))
+        self.product_table.setObjectName("printProductTable")
         self.product_table.verticalHeader().setVisible(False)
         self.product_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.product_table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -406,9 +409,14 @@ class PrintPage(QWidget):
         # 切回来也要重新录入。SN 与产品强绑定，留着旧产品的 SN 极易被误打进
         # 新产品的标签里，因此切换即清空（整箱已打印时列表本来就是空的）。
         old = self.current
-        if old is not None and int(old.get("_id", 0)) != int(pid):
+        changed = old is None or int(old.get("_id", 0)) != int(pid)
+        if old is not None and changed:
             self.db.clear_product_drafts(int(old["_id"]))
         self.current = self.db.get_product(pid)
+        # 需求：更换产品时生产日期复位为系统当天，
+        # 否则会沿用上一个产品选的日期，容易打错标签
+        if changed:
+            self.date_edit.setDate(QDate.currentDate())
         self._last_print_ok = False
         self._fill_detail()
         self._load_drafts()
@@ -592,7 +600,9 @@ class PrintPage(QWidget):
                 rule["pattern"], sn, prefix=prefix,
                 batch=self._current_batch(),
                 factory=self.db.get_setting("factory_code", ""),
-                total_len=rule.get("total_len", 0))
+                total_len=rule.get("total_len", 0),
+                # 规则里若写了年月日占位符，就按界面所选生产日期核对
+                day=self.date_edit.date().toPyDate())
             if not ok:
                 QMessageBox.warning(self, "SN 错误", msg)
                 return
@@ -690,8 +700,8 @@ class PrintPage(QWidget):
         if not template_name:
             QMessageBox.warning(self, "提示", "产品未配置打印模板")
             return
-        template_dir = self.db.get_setting("template_dir") or str(ROOT)
-        template_path = Path(template_dir) / template_name
+        template_dir = resolve_template_dir(self.db.get_setting("template_dir"))
+        template_path = template_path_abs(template_dir, template_name)
 
         day = self._current_date()
         batch = self._current_batch()
@@ -733,7 +743,7 @@ class PrintPage(QWidget):
         self.manual_btn.setText("打印中…")
         self._worker = PrintWorker(
             self.bartender, template_path, data,
-            self.db.get_setting("default_printer", ""), box_no, sn_pairs)
+            resolve_printer(self.db.get_setting("default_printer", "")), box_no, sn_pairs)
         self._worker.ok.connect(self._on_print_ok)
         self._worker.fail.connect(self._on_print_fail)
         self._worker.start()

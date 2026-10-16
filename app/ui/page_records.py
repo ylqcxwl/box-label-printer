@@ -7,19 +7,21 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import QDate, Qt, QThread, QTimer, pyqtSignal
-from PyQt5.QtWidgets import (QCheckBox, QDateEdit, QFileDialog, QFrame,
+from PyQt5.QtGui import QColor
+from PyQt5.QtWidgets import (QApplication, QCheckBox, QDateEdit, QFileDialog, QFrame,
                              QHBoxLayout, QInputDialog, QLabel,
                              QLineEdit, QMessageBox, QPushButton,
-                             QTableWidget, QTableWidgetItem, QVBoxLayout,
-                             QWidget)
+                             QStyledItemDelegate, QTableWidget,
+                             QTableWidgetItem, QVBoxLayout, QWidget)
 
 from app.core import excel_io, listconfig
-from app.core.bartender import BarTender
+from app.core.bartender import (BarTender, resolve_printer,
+                               template_path as template_path_abs)
 from app.core.db import DB, KIND_PRINT
-from app.config import ROOT
+from app.config import resolve_template_dir
 from app.ui.table_util import freeze_widths
 
 # 查询条件行的宽度约束。
@@ -32,6 +34,39 @@ BOX_STRETCH = 4
 DATE_EDIT_WIDTH = 126      # 日期框宽度：实测 "2026-12-31" 宽 74px，
                            # 再加左内边距 + 26px 下拉按钮 + 边框余量，126 足够且比原来（194）短很多
 FILTER_DEBOUNCE_MS = 300   # 输入后多久自动刷新（避免每敲一个字符就查一次库）
+
+# 已勾选行的底色：选中态要「一眼可辨」，浅蓝底在白表格上足够醒目又不刺眼
+ROW_CHECKED_BG = QColor("#E3F0FF")
+ROW_CHECKED_BG_CSS = "#E3F0FF"
+
+
+class RecordRowDelegate(QStyledItemDelegate):
+    """给「已勾选」的记录整行铺底色。
+
+    ★ 为什么不用 QTableWidgetItem.setBackground：
+      本程序给表格套了全局 QSS，**QSS 会接管 item 的背景绘制** ——
+      实测 setBackground 的值存进去了（background().color() 读得到），
+      但屏幕上完全不显示（对照渲染证实）。
+      所以改为在委托里先 fillRect 铺底色，再交给默认绘制处理文字与选中态，
+      这样既能看到行底色，也不会丢掉原有的文字排版。
+    """
+
+    def __init__(self, table: QTableWidget, parent=None):
+        super().__init__(parent)
+        self._table = table
+
+    def _checked(self, row: int) -> bool:
+        widget = self._table.cellWidget(row, 0)
+        if widget is None:
+            return False
+        chk = widget.findChild(QCheckBox)
+        return bool(chk and chk.isChecked())
+
+    def paint(self, painter, option, index) -> None:
+        # 第 0 列是勾选框容器（有自己的底色），不在这里重复铺
+        if index.column() > 0 and self._checked(index.row()):
+            painter.fillRect(option.rect, ROW_CHECKED_BG)
+        super().paint(painter, option, index)
 
 
 class ReprintWorker(QThread):
@@ -76,6 +111,8 @@ class RecordsPage(QWidget):
         self._rows: List[Dict[str, Any]] = []
         self._worker = None
         self._width_cache: Dict[str, Any] = {}
+        # Shift 范围选择的起点：上一次点击过的行号
+        self._last_clicked_row: Optional[int] = None
         self._filter_timer = QTimer(self)
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(FILTER_DEBOUNCE_MS)
@@ -152,12 +189,18 @@ class RecordsPage(QWidget):
         self.count_label = QLabel("共 0 条")
         self.count_label.setObjectName("sectionTitle")
         btn_row.addWidget(self.count_label)
+        # 操作提示：Shift 范围选择是隐藏功能，不写出来没人知道
+        hint = QLabel("按住 Shift 点勾选框可一次选一整段")
+        hint.setObjectName("recordHint")
+        btn_row.addWidget(hint)
         root.addLayout(btn_row)
 
         # 记录表格
         self.table = QTableWidget(0, 2)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        # 勾选整行的底色靠委托绘制（QSS 会盖掉 setBackground，见委托注释）
+        self.table.setItemDelegate(RecordRowDelegate(self.table, self.table))
         root.addWidget(self.table, 1)
 
     # ================= 列配置 =================
@@ -217,8 +260,15 @@ class RecordsPage(QWidget):
             row_idx = self.table.rowCount()
             self.table.insertRow(row_idx)
             chk_widget = QWidget()
+            # 给容器一个 objectName，行底色只作用于它自身，不会染到里面的复选框
+            chk_widget.setObjectName("rowChk")
             lay = QHBoxLayout(chk_widget)
             chk = QCheckBox()
+            chk.setToolTip("点击勾选；按住 Shift 再点，可一次性选/取消一整段")
+            # 用 clicked 而不是 toggled/stateChanged：
+            # setChecked() 不会触发 clicked，所以「全选」「Shift 范围选择」
+            # 里批量改状态都不会递归进来
+            chk.clicked.connect(lambda _c, r=row_idx: self._on_row_click(r))
             lay.addWidget(chk)
             lay.setAlignment(Qt.AlignCenter)
             lay.setContentsMargins(0, 0, 0, 0)
@@ -233,6 +283,72 @@ class RecordsPage(QWidget):
                       min_width=76, max_width=300,
                       overrides={0: 44})
         self.count_label.setText(f"共 {len(self._rows)} 条")
+
+    # ================= 行选中着色 =================
+
+    def _row_checkbox(self, row: int) -> Optional[QCheckBox]:
+        """取该行的勾选框（找不到时返回 None）。"""
+        widget = self.table.cellWidget(row, 0)
+        return widget.findChild(QCheckBox) if widget is not None else None
+
+    def _row_checked(self, row: int) -> bool:
+        """该行的勾选框当前是否被选中。"""
+        chk = self._row_checkbox(row)
+        return bool(chk and chk.isChecked())
+
+    # ================= Shift 范围快速选择 =================
+
+    def _on_row_click(self, row: int) -> None:
+        """处理某一行勾选框的点击。
+
+        按住 Shift 时，把「上次点击的行」到「这一行」之间的所有行
+        一起设成同一状态，实现范围快速选择（与资源管理器里选文件一致）。
+        不按 Shift 就只处理当前这一行。
+        """
+        chk = self._row_checkbox(row)
+        if chk is None:
+            return
+        target = chk.isChecked()
+        if (QApplication.keyboardModifiers() & Qt.ShiftModifier
+                and self._last_clicked_row is not None
+                and self._last_clicked_row != row):
+            lo, hi = sorted((self._last_clicked_row, row))
+            for r in range(lo, hi + 1):
+                box = self._row_checkbox(r)
+                if box is not None and box.isChecked() != target:
+                    box.setChecked(target)      # 不触发 clicked，不会递归
+            self._repaint_rows(range(lo, hi + 1))
+        else:
+            self._paint_row(row, target)
+        self._last_clicked_row = row
+
+    def _repaint_rows(self, rows) -> None:
+        """批量刷新若干行的显示（底色 + 勾选框容器背景）。"""
+        for r in rows:
+            self._paint_row(r, self._row_checked(r))
+
+    def _paint_row(self, row: int, checked: bool) -> None:
+        """勾选状态变化后重画该行。
+
+        底色由 RecordRowDelegate 在绘制时按勾选状态现算，
+        这里只需要让表格刷新「这一行」的显示区域。
+        """
+        if row < 0 or row >= self.table.rowCount():
+            return
+        index = self.table.model().index(row, 0)
+        rect = self.table.visualRect(index)
+        rect.setLeft(0)
+        rect.setRight(self.table.viewport().width())
+        self.table.viewport().update(rect)
+        widget = self.table.cellWidget(row, 0)
+        if widget is not None:
+            widget.setStyleSheet(
+                f"QWidget#rowChk {{ background: {ROW_CHECKED_BG_CSS}; }}"
+                if checked else "")
+            widget.update()
+
+
+# 记录表要用委托画行底色，见 RecordRowDelegate 的说明
 
     def _selected_rows(self) -> List[int]:
         result = []
@@ -251,6 +367,10 @@ class RecordsPage(QWidget):
         target = not all(checked)
         for r in range(rows):
             self.table.cellWidget(r, 0).findChild(QCheckBox).setChecked(target)
+        # setChecked 不会触发 clicked，着色得自己补一次
+        self._repaint_rows(range(rows))
+        # 全选是批量操作，不该成为下一次 Shift 选择的起点
+        self._last_clicked_row = None
 
     # ================= 操作 =================
 
@@ -306,8 +426,8 @@ class RecordsPage(QWidget):
         if not template_name:
             QMessageBox.warning(self, "错误", "记录中缺少打印模板信息")
             return
-        template_dir = self.db.get_setting("template_dir") or str(ROOT)
-        template_path = Path(template_dir) / template_name
+        template_dir = resolve_template_dir(self.db.get_setting("template_dir"))
+        template_path = template_path_abs(template_dir, template_name)
 
         total = int(snapshot.get("shuliang", 0) or len(records))
         data: Dict[str, str] = {}
@@ -324,7 +444,7 @@ class RecordsPage(QWidget):
 
         self._worker = ReprintWorker(
             self.bartender, template_path, data,
-            self.db.get_setting("default_printer", ""), box_no)
+            resolve_printer(self.db.get_setting("default_printer", "")), box_no)
         self._worker.ok.connect(
             lambda bn: QMessageBox.information(self, "完成", f"箱号 {bn} 已重新打印"))
         self._worker.fail.connect(
