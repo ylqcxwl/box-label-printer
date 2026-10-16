@@ -10,7 +10,7 @@ from typing import Callable, Dict, List, Optional
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                             QFileDialog, QFormLayout, QHBoxLayout,
+                             QFileDialog, QFormLayout, QGridLayout, QHBoxLayout,
                              QFrame, QHeaderView, QInputDialog, QLabel, QLineEdit,
                              QListWidget, QListWidgetItem, QMessageBox,
                              QPlainTextEdit, QPushButton, QSpinBox, QTabWidget,
@@ -21,7 +21,7 @@ from app.core import backup as backup_mod
 from app.core import listconfig
 from app.core import rules as rule_engine
 from app.core import updater
-from app.core.bartender import list_printers
+from app.core.bartender import list_printers, system_default_printer
 from app.core.db import DB, KIND_PRINT, KIND_PRODUCT
 from app.ui import icons
 from app.version import VERSION
@@ -94,6 +94,13 @@ class RuleDialog(QDialog):
             else "如 {PREFIX}/{FACTORY}{BATCH}{SEQ:7}")
         form.addRow("规则表达式", self.pattern_edit)
 
+        # 实时预览：紧贴表达式下方，边打字边看结果，不用再点「预览」按钮
+        self.preview_value = QLabel("—")
+        self.preview_value.setObjectName("livePreview")
+        self.preview_value.setWordWrap(True)
+        self.preview_value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        form.addRow("实时预览", self.preview_value)
+
         self.digits_spin = QSpinBox()
         if mode == "box":
             self.digits_spin.setRange(1, 10)
@@ -105,44 +112,75 @@ class RuleDialog(QDialog):
             self.digits_spin.setValue(digits if digits else 0)
             form.addRow("总位数(0=不校验)", self.digits_spin)
 
+        # 流水号字符集：决定流水位按什么字符进位（纯数字 / 字母 / 16 进制 …）
+        seq_row = QHBoxLayout()
+        seq_row.setSpacing(8)
+        self.seq_system_combo = QComboBox()
+        for code, label, desc in rule_engine.SEQ_SYSTEM_CHOICES:
+            self.seq_system_combo.addItem(label, code)
+            self.seq_system_combo.setItemData(
+                self.seq_system_combo.count() - 1, desc, Qt.ToolTipRole)
+        seq_row.addWidget(self.seq_system_combo, 1)
+        self.seq_custom_edit = QLineEdit()
+        self.seq_custom_edit.setPlaceholderText("自定义字符顺序，如 XY 或 0123456789ABC")
+        self.seq_custom_edit.setMaxLength(rule_engine.CUSTOM_MAX_CHARS)
+        self.seq_custom_edit.setToolTip(
+            "按你填的字符顺序进位：填 XY 时，第 1 个是 XXXXX，之后 XXXXY、XXXYX…\n"
+            "（显示位数取上面的流水位数）")
+        seq_row.addWidget(self.seq_custom_edit, 1)
+        form.addRow("流水字符集", seq_row)
+
         self.remark_edit = QLineEdit(remark)
         form.addRow("备注", self.remark_edit)
         body_layout.addLayout(form)
 
-        # 快捷插入占位符：所有占位符都是「可选添加」，点一下插到光标处
-        insert_row = QHBoxLayout()
-        insert_row.setSpacing(6)
-        insert_row.addWidget(QLabel("快捷插入"))
-        tokens = (["{YYYY}", "{YY}", "{Y}", "{MM}", "{M}", "{DD}",
-                   "{PREFIX}", "{FACTORY}", "{BATCH}", "{SEQ:5}", "{&}"]
+        # 快捷插入占位符：用网格分行排布。
+        # 之前排成一行会被挤窄，按钮文字被截断（如 {PREFIX} 显示成 REFI）。
+        tokens = ([("{YYYY}", "{YYYY}"), ("{YY}", "{YY}"), ("{Y}", "{Y}"),
+                   ("{MM}", "{MM}"), ("{M}", "{M}"), ("{DD}", "{DD}"),
+                   ("{PREFIX}", "{PREFIX}"), ("{FACTORY}", "{FACTORY}"),
+                   ("{BATCH}", "{BATCH}"), ("SEQ", ""),
+                   # 按钮文字里的 & 会被 Qt 当成快捷键标记（显示成 {}），
+                   # 要写成 && 才会显示出真正的 &，插入的仍是 {&}
+                   ("{&&}", "{&}")]
                   if mode == "box" else
-                  ["{PREFIX}", "{FACTORY}", "{BATCH}", "{SEQ:7}"])
-        for token in tokens:
-            btn = QPushButton(token)
+                  # SN 规则也提供箱号规则里那套年月日占位符
+                  [("{YYYY}", "{YYYY}"), ("{YY}", "{YY}"), ("{Y}", "{Y}"),
+                   ("{MM}", "{MM}"), ("{M}", "{M}"), ("{DD}", "{DD}"),
+                   ("{PREFIX}", "{PREFIX}"), ("{FACTORY}", "{FACTORY}"),
+                   ("{BATCH}", "{BATCH}"), ("SEQ", ""),
+                   ("{&&}", "{&}")])
+        insert_grid = QGridLayout()
+        insert_grid.setSpacing(6)
+        insert_grid.addWidget(QLabel("快捷插入"), 0, 0)
+        # 每行 4 个：按钮带内边距后 {FACTORY} 约需 130px，
+        # 一行 6 个会超出对话框宽度被压窄、文字截断（见本轮需求）。
+        per_row = 4
+        for idx, (label, text) in enumerate(tokens):
+            btn = QPushButton(label)
             btn.setObjectName("tokenBtn")
-            btn.clicked.connect(lambda _c, t=token: self._insert_token(t))
-            insert_row.addWidget(btn)
-        insert_row.addStretch(1)
-        body_layout.addLayout(insert_row)
+            # 不设固定宽度：让按钮按文字自适应，配合网格分行就不会再截断
+            btn.clicked.connect(
+                lambda _c, t=text: self._insert_token(
+                    t if t else self._current_seq_token()))
+            insert_grid.addWidget(btn, idx // per_row, idx % per_row + 1)
+        for col in range(1, per_row + 1):
+            insert_grid.setColumnStretch(col, 1)
+        body_layout.addLayout(insert_grid)
 
-        preview_label = QLabel("预览")
-        preview_label.setObjectName("dlgSection")
-        body_layout.addWidget(preview_label)
+        help_title = QLabel("编写说明")
+        help_title.setObjectName("dlgSection")
+        body_layout.addWidget(help_title)
 
         self.help_box = QPlainTextEdit()
         self.help_box.setObjectName("helpBox")
         self.help_box.setReadOnly(True)
-        self.help_box.setFixedHeight(232)
+        self.help_box.setFixedHeight(170)   # 快捷插入改成 3 行后压缩说明框，避免窗口过高
         self.help_box.setPlainText(help_text)
         body_layout.addWidget(self.help_box)
 
-        # ---- 底部：预览（左） / 保存、取消（右） ----
+        # ---- 底部：保存、取消（原来的「预览」按钮已删除，改为实时预览） ----
         bottom = QHBoxLayout()
-        preview_btn = QPushButton("预览")
-        preview_btn.setObjectName("previewBtn")
-        preview_btn.setFixedWidth(110)
-        preview_btn.clicked.connect(self._do_preview)
-        bottom.addWidget(preview_btn)
         bottom.addStretch(1)
         save_btn = QPushButton("保存")
         save_btn.setObjectName("primary")
@@ -156,6 +194,18 @@ class RuleDialog(QDialog):
         body_layout.addLayout(bottom)
 
         root.addWidget(body)
+
+        # ---- 联动：表达式/位数/字符集任一变化都刷新预览 ----
+        self.pattern_edit.textChanged.connect(self._refresh_preview)
+        self.seq_system_combo.currentIndexChanged.connect(
+            lambda *_: self._on_seq_system_changed())
+        self.seq_custom_edit.textChanged.connect(
+            lambda *_: self._on_seq_custom_changed())
+        if mode == "box":
+            self.digits_spin.valueChanged.connect(
+                lambda *_: self._on_seq_digits_changed())
+        self._load_seq_settings()
+        self._refresh_preview()
 
     # ---- 无边框窗口拖动 ----
     def mousePressEvent(self, event) -> None:
@@ -193,21 +243,97 @@ class RuleDialog(QDialog):
         edit.setCursorPosition(pos + len(token))
         edit.setFocus()
 
-    # ---- 预览：把渲染结果写回说明框底部 ----
-    def _do_preview(self) -> None:
+    # ---- 流水字符集 ----
+
+    def _seq_system(self) -> str:
+        return self.seq_system_combo.currentData() or "DIGIT"
+
+    def _seq_custom(self) -> str:
+        return self.seq_custom_edit.text().strip()
+
+    def _seq_digits(self) -> int:
+        """当前流水位数。
+
+        箱号规则里由「流水位数」控件决定；SN 规则的位数写在表达式里，
+        表达式没写 SEQ 时用默认 7。
+        """
+        if self.mode == "box":
+            return max(1, self.digits_spin.value())
+        for m in rule_engine.TOKEN_RE.finditer(self.pattern_edit.text()):
+            if m.group(1) in ("SEQ", "SEQR"):
+                args = rule_engine.parse_token_args(m.group(2))
+                if args and args[0].isdigit():
+                    return int(args[0])
+        return 7
+
+    def _current_seq_token(self) -> str:
+        """按当前字符集拼出要插入 / 写回表达式的 SEQ 占位符。"""
+        return rule_engine.seq_token(self._seq_digits(), self._seq_system(),
+                                     self._seq_custom())
+
+    def _load_seq_settings(self) -> None:
+        """打开对话框时，从表达式里回填字符集选择。"""
+        system, custom = "DIGIT", ""
+        for m in rule_engine.TOKEN_RE.finditer(self.pattern_edit.text()):
+            if m.group(1) in ("SEQ", "SEQR"):
+                args = rule_engine.parse_token_args(m.group(2))
+                _d, _charset, system = rule_engine.resolve_charset(args)
+                if system == "CUSTOM" and len(args) > 2:
+                    custom = args[2]
+                break
+        for i in range(self.seq_system_combo.count()):
+            if self.seq_system_combo.itemData(i) == system:
+                self.seq_system_combo.setCurrentIndex(i)
+                break
+        self.seq_custom_edit.setText(custom)
+        self.seq_custom_edit.setVisible(system == "CUSTOM")
+
+    def _on_seq_system_changed(self) -> None:
+        self.seq_custom_edit.setVisible(self._seq_system() == "CUSTOM")
+        self._rewrite_seq_token()
+
+    def _on_seq_custom_changed(self) -> None:
+        if self._seq_system() == "CUSTOM":
+            self._rewrite_seq_token()
+
+    def _on_seq_digits_changed(self) -> None:
+        self._rewrite_seq_token()
+
+    def _rewrite_seq_token(self) -> None:
+        """把表达式里的 SEQ 占位符改写成当前字符集（表达式没有 SEQ 时不动）。"""
+        text = self.pattern_edit.text()
+        if not any(m.group(1) in ("SEQ", "SEQR")
+                   for m in rule_engine.TOKEN_RE.finditer(text)):
+            self._refresh_preview()
+            return
+        token = self._current_seq_token()
+        new_text = rule_engine.TOKEN_RE.sub(
+            lambda m: token if m.group(1) in ("SEQ", "SEQR") else m.group(0),
+            text)
+        if new_text != text:
+            self.pattern_edit.setText(new_text)
+        else:
+            self._refresh_preview()
+
+    # ---- 实时预览 ----
+
+    def _refresh_preview(self) -> None:
+        """把预览结果显示在「规则表达式」下方（原来要点按钮才出）。"""
         pattern = self.pattern_edit.text().strip()
+        if not pattern:
+            self.preview_value.setText("—（填写表达式后自动显示）")
+            self.preview_value.setStyleSheet("color:#8A9099;")
+            return
         factory = self.db.get_setting("factory_code", "") if self.db else ""
         if self.mode == "box":
             ok, text = rule_engine.preview_box_no(
                 pattern, factory=factory or "2", prefix="8001")
-            label = "预览结果"
         else:
             ok, text = rule_engine.preview_sn(
                 pattern, factory=factory or "2", prefix="1234")
-            label = "示例 SN"
-        base = self.help_box.toPlainText().split("\n\n──────────")[0]
-        tip = f"{label}：{text}" if ok else f"预览失败：{text}"
-        self.help_box.setPlainText(f"{base}\n\n──────────\n{tip}")
+        self.preview_value.setText(text)
+        self.preview_value.setStyleSheet(
+            "color:#1F2329;font-weight:bold;" if ok else "color:#D93025;")
 
     def values(self):
         return (self.name_edit.text().strip(),
@@ -264,7 +390,7 @@ class FieldDialog(QDialog):
         self.help_box = QPlainTextEdit()
         self.help_box.setObjectName("helpBox")
         self.help_box.setReadOnly(True)
-        self.help_box.setFixedHeight(210)
+        self.help_box.setFixedHeight(170)   # 快捷插入改成 3 行后压缩说明框，避免窗口过高
         self.help_box.setPlainText(help_text)
         layout.addWidget(self.help_box)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -799,7 +925,8 @@ class SettingsPage(QWidget):
         title.setStyleSheet("font-weight:bold;font-size:15px;")
         left.addWidget(title)
 
-        left.addWidget(QLabel("默认打印机"))
+        self.printer_label = QLabel("默认打印机")
+        left.addWidget(self.printer_label)
         printer_row = QHBoxLayout()
         self.printer_combo = QComboBox()
         self.printer_combo.setEditable(True)
@@ -812,7 +939,7 @@ class SettingsPage(QWidget):
         left.addWidget(QLabel("模板文件夹"))
         tpl_row = QHBoxLayout()
         self.template_dir_edit = QLineEdit()
-        self.template_dir_edit.setPlaceholderText("留空使用程序根目录")
+        self.template_dir_edit.setPlaceholderText("留空使用程序根目录下的 templates")
         tpl_row.addWidget(self.template_dir_edit, 1)
         tpl_btn = QPushButton("浏览…")
         tpl_btn.clicked.connect(self._browse_template_dir)
@@ -963,7 +1090,12 @@ class SettingsPage(QWidget):
             self.backup_dir_edit.setText(path)
 
     def _save_system(self) -> None:
-        self.db.set_setting("default_printer", self.printer_combo.currentText().strip())
+        # 输入框里显示的若是「电脑默认打印机」本身，就存空串：
+        # 以后在 Windows 里换了默认打印机，程序仍会自动跟随
+        printer_text = self.printer_combo.currentText().strip()
+        if printer_text and printer_text == system_default_printer():
+            printer_text = ""
+        self.db.set_setting("default_printer", printer_text)
         self.db.set_setting("template_dir", self.template_dir_edit.text().strip())
         self.db.set_setting("factory_code", self.factory_edit.text().strip())
         if self.password_edit.text():
@@ -1071,6 +1203,11 @@ class SettingsPage(QWidget):
         for name in list_printers():
             self.printer_combo.addItem(name)
         self.printer_combo.setCurrentText(self.db.get_setting("default_printer"))
+        # 需求：不在标签后加注释，直接把电脑默认打印机显示在输入框里；
+        # 设置里没存过就回落到系统默认打印机，显示的就是「当前实际会用哪台」
+        configured = self.db.get_setting("default_printer").strip()
+        self.printer_combo.setCurrentText(
+            configured or system_default_printer())
         self.template_dir_edit.setText(self.db.get_setting("template_dir"))
         self.factory_edit.setText(self.db.get_setting("factory_code"))
         self.password_edit.clear()

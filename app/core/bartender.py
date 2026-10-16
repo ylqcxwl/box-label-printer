@@ -44,6 +44,67 @@ def list_printers() -> List[str]:
         return []
 
 
+def system_default_printer() -> str:
+    """取 Windows 的默认打印机名。
+
+    Returns:
+        打印机名；读取失败（无 win32print、未设置默认打印机等）时返回空串
+    """
+    try:
+        import win32print
+        return win32print.GetDefaultPrinter() or ""
+    except Exception:
+        return ""
+
+
+def template_name(name: str) -> str:
+    """把产品里填的模板名统一成「不带 .btw 后缀」的形式。
+
+    需求：产品管理里只填文件名即可，不必连后缀一起写。
+    已经填了 .btw 的旧数据照样能识别（这里只是去掉后缀，不是再加一层）。
+
+    Args:
+        name: 产品里的模板名，如 "t"、"t.btw"、"T.BTW"
+
+    Returns:
+        去掉 .btw 后缀的名字；原值为空时返回空串
+    """
+    text = (name or "").strip()
+    if not text:
+        return ""
+    return text[:-4] if text.lower().endswith(".btw") else text
+
+
+def template_path(template_dir: Path, name: str) -> Path:
+    """按模板目录 + 模板名拼出 .btw 文件的完整路径。
+
+    只填文件名的产品（如 "t"）在这里补齐 .btw；
+    旧数据里已经带 .btw 的不会变成 .btw.btw。
+
+    Returns:
+        .btw 文件完整路径；模板名为空时返回空路径（调用方会先判空，
+        这里兜一层避免拼出 ".btw" 这种奇怪文件名）
+    """
+    base = template_name(name)
+    return Path(template_dir) / (base + ".btw") if base else Path()
+
+
+def resolve_printer(configured: str) -> str:
+    """确定实际使用的打印机。
+
+    需求：设置页没填 / 没改过时，直接跟随「电脑的默认打印机」，
+    这样用户换了系统默认打印机，程序自动跟着变，不用再去设置里改一遍。
+
+    Args:
+        configured: 设置页「默认打印机」里存的值，可为空
+
+    Returns:
+        实际要用的打印机名；都取不到时返回空串（交给 BarTender 自己决定）
+    """
+    name = (configured or "").strip()
+    return name or system_default_printer()
+
+
 class BarTender:
     """BarTender COM 封装。mock=True 时不调用 BarTender，仅写打印日志。"""
 
