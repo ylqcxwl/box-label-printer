@@ -12,7 +12,8 @@ from PyQt5.QtGui import (QBrush, QColor, QIcon, QPainter, QPainterPath, QPen,
                          QPixmap)
 from PyQt5.QtWidgets import QFileDialog, QWidget
 
-from app.config import CUSTOM_LOGO, DEFAULT_LOGO
+from app.config import (ASSETS_WRITE_DIR, CUSTOM_LOGO, DATA_DIR,
+                       DEFAULT_LOGO)
 
 
 def _pixmap(size: int) -> tuple:
@@ -128,17 +129,47 @@ def load_logo(size: int = 96) -> QPixmap:
     return tag_pixmap(size)
 
 
+_WRITABLE_ASSETS: Optional[Path] = None
+
+
+def arrow_dir() -> Path:
+    """箭头等运行时生成图片的存放目录。
+
+    首选程序根目录下的 assets（与 logo.ico / logo.png 同一个文件夹，
+    需求：原来 data/assets 与根目录 assets 同名，已合并）。
+
+    ★ 打包后如果装在 Program Files 这类只读位置，根目录 assets 写不进去，
+      这时退回 data/assets —— 找不到可写目录也不报错，调用方只需按返回的
+      路径去用，文件不存在时下拉框就是没有箭头，不影响其它功能。
+    """
+    global _WRITABLE_ASSETS
+    if _WRITABLE_ASSETS is not None:
+        return _WRITABLE_ASSETS
+    for candidate in (ASSETS_WRITE_DIR, DATA_DIR / "assets"):
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".write_probe"
+            probe.write_bytes(b"")
+            probe.unlink(missing_ok=True)
+            _WRITABLE_ASSETS = candidate
+            return candidate
+        except OSError:
+            continue
+    _WRITABLE_ASSETS = ASSETS_WRITE_DIR
+    return _WRITABLE_ASSETS
+
+
 def ensure_arrow_png(color: str = "#5A6068", size: int = 16,
                      direction: str = "down") -> Path:
     """生成箭头图片（供下拉框 / 日期框 / 微调框使用），返回其绝对路径。
 
-    图片写入 data/assets 而非打包资源目录——打包后 _MEIPASS 为只读临时目录。
+    图片写入程序根目录下的 assets；若该目录不可写（打包后装在只读位置）
+    则退回 data/assets。打包资源目录 _MEIPASS 是只读临时目录，不往里写。
 
     Args:
         direction: "down"（默认，下拉箭头）或 "up"（微调框上箭头）
     """
-    out_dir = CUSTOM_LOGO.parent / "assets"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = arrow_dir()
     # 文件名带上尺寸：下拉框用 16px、微调框用 12px，两者互不覆盖
     suffix = "" if size == 16 else f"_{size}"
     path = out_dir / f"arrow_{direction}{suffix}.png"

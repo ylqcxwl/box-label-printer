@@ -525,6 +525,17 @@ class PrintPage(QWidget):
             self._append_sn_row(d["sn"], d["id"])
         self._refresh_sn_count()
         self._refresh_draft_hint()
+        self._scroll_sn_to_bottom()
+
+    def _scroll_sn_to_bottom(self) -> None:
+        """让 SN 列表的滑块停到最后一行。
+
+        需求：刚录进去的 SN 在列表末尾，滑块停在顶部的话得手动往下拖才看得见，
+        打印时最容易漏看。这里每次刷新后自动滚到底部。
+        """
+        rows = self.sn_table.rowCount()
+        if rows:
+            self.sn_table.scrollToBottom()
 
     def _refresh_draft_hint(self) -> None:
         """当前箱已录但未打印时的提示条。
@@ -634,6 +645,7 @@ class PrintPage(QWidget):
         self._append_sn_row(sn, draft_id)
         self._refresh_sn_count()
         self._refresh_draft_hint()
+        self._scroll_sn_to_bottom()      # 新录的 SN 在末尾，滚过去才看得见
         self._last_print_ok = False
         self._update_status()
         self.sn_input.setFocus()

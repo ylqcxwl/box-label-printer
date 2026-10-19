@@ -4,6 +4,7 @@
 产品表头 = 字段映射表中的中文名；打印记录表头 = 打印记录设置中勾选的中文列名。
 """
 
+import re
 import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -121,22 +122,110 @@ def import_products(path: Path, fields: List[Dict[str, Any]],
     return added, updated, errors
 
 
+def sheet_name_for_date(date_text: str, fmt: str = "yy.MM.dd") -> str:
+    """把 "2026-10-19" 这类日期按格式转成工作表名，如 "26.10.19"。
+
+    支持两位/四位年与 . - / _ 分隔：yy / yyyy / MM / dd。
+    格式串里不认识的字符原样保留；日期解析不出来时直接返回原字符串。
+
+    Args:
+        date_text: 形如 "2026-10-19" 的日期文本（也可能是别的东西）
+        fmt: 格式，默认 "yy.MM.dd"；在系统设置里可改
+
+    Returns:
+        工作表名（已处理 Excel 的非法字符与 31 字符长度上限）
+    """
+    text = (date_text or "").strip()
+    if not text:
+        return "未填日期"
+    parts = re.split(r"[-/._]", text)
+    year = month = day = ""
+    if len(parts) >= 3 and all(p.isdigit() for p in parts[:3]):
+        year, month, day = parts[0], parts[1], parts[2]
+    elif len(parts) == 1 and len(text) == 8 and text.isdigit():
+        year, month, day = text[:4], text[4:6], text[6:]
+    if not year:
+        return sanitize_sheet_name(text)
+    out = (fmt.replace("yyyy", year)
+              .replace("YYYY", year)
+              .replace("yy", year[-2:])
+              .replace("YY", year[-2:])
+              .replace("MM", month.zfill(2))
+              .replace("dd", day.zfill(2))
+              .replace("DD", day.zfill(2)))
+    return sanitize_sheet_name(out)
+
+
+def sanitize_sheet_name(name: str) -> str:
+    """把字符串整理成合法的 Excel 工作表名。
+
+    Excel 限制：不含 : \\ / ? * [ ]，长度 ≤ 31，且不能为空。
+    """
+    cleaned = re.sub(r"[:\\/?*\[\]]", "-", (name or "").strip())
+    cleaned = cleaned[:31] if len(cleaned) > 31 else cleaned
+    return cleaned or "Sheet"
+
+
 def export_records(path: Path, columns: List[Tuple[str, str]],
-                   rows: List[Dict[str, Any]]) -> None:
+                   rows: List[Dict[str, Any]], *,
+                   group_by_date: bool = False,
+                   sheet_name_format: str = "yy.MM.dd",
+                   date_column: str = "produce_date") -> Dict[str, int]:
     """导出打印记录到 Excel（中文表头）。
 
     Args:
         path: 目标 .xlsx 路径
         columns: [(列id, 中文列名)] 按显示顺序
         rows: 打印记录（snapshot 已解析为 product 字段）
+        group_by_date: True = 按打印日期分别存到各自的 sheet；
+                       False = 全部放在一个 sheet 里
+        sheet_name_format: 按日期分组时的工作表名格式，默认 "yy.MM.dd"
+        date_column: 取日期用的列 id，默认 produce_date
+
+    Returns:
+        {工作表名: 该表行数}，便于调用方回显导出结果
     """
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "打印记录"
     headers = [label for _, label in columns]
-    ws.append(headers)
+    wb = Workbook()
+    wb.remove(wb.active)          # 去掉默认空表，自己按需建
+
+    def fill(ws, data: List[Dict[str, Any]]) -> None:
+        ws.append(headers)
+        for r in data:
+            ws.append([str(r.get(cid, "")) for cid, _ in columns])
+        _style_header(ws, len(headers))
+        _auto_width(ws, len(headers), len(data))
+
+    result: Dict[str, int] = {}
+    if not group_by_date:
+        ws = wb.create_sheet("打印记录")
+        fill(ws, rows)
+        result["打印记录"] = len(rows)
+        wb.save(str(path))
+        return result
+
+    # 按日期分组：保持原始顺序，同一天的记录归到同一个 sheet
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    order: List[str] = []
     for r in rows:
-        ws.append([str(r.get(cid, "")) for cid, _ in columns])
-    _style_header(ws, len(headers))
-    _auto_width(ws, len(headers), len(rows))
+        key = sheet_name_for_date(str(r.get(date_column, "")),
+                                  sheet_name_format)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+    used: Dict[str, int] = {}
+    for key in order:
+        # 同格式下不同日期撞名（如格式只写 MM）时加序号区分，避免覆盖
+        base = key
+        used[base] = used.get(base, 0) + 1
+        title = base if used[base] == 1 else f"{base}({used[base]})"
+        ws = wb.create_sheet(sanitize_sheet_name(title))
+        fill(ws, groups[key])
+        result[sanitize_sheet_name(title)] = len(groups[key])
+    if not groups:                 # 一条记录都没有时也要有张表
+        ws = wb.create_sheet("打印记录")
+        fill(ws, [])
+        result["打印记录"] = 0
     wb.save(str(path))
+    return result

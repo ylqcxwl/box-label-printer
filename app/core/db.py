@@ -103,7 +103,8 @@ SN_RULE_LEGACY_PATTERNS = {
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "factory_code": "2",
     "default_printer": "",
-    "template_dir": "",            # 空 = 程序根目录下的 templates
+    "template_dir": "",            # 空 = data 目录下的 templates
+    "sheet_name_format": "yy.MM.dd",   # 导出 Excel 按日期分表时的 sheet 名格式
     "delete_password": "123456",
     "auto_backup": False,
     "backup_time": "18:00",
