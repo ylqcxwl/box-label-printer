@@ -383,10 +383,27 @@ class RecordsPage(QWidget):
             self, "导出打印记录", "打印记录.xlsx", "Excel 文件 (*.xlsx)")
         if not path:
             return
+        from app.ui.export_choice import ExportChoiceDialog
+        dlg = ExportChoiceDialog(
+            default_format=self.db.get_setting("sheet_name_format", "yy.MM.dd")
+            or "yy.MM.dd",
+            record_count=len(rows), parent=self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        group_by_date, sheet_fmt = dlg.result()
         try:
-            excel_io.export_records(Path(path), self.record_columns(),
-                                    [self._rows[r] for r in rows])
-            QMessageBox.information(self, "完成", f"已导出 {len(rows)} 条记录")
+            sheets = excel_io.export_records(
+                Path(path), self.record_columns(),
+                [self._rows[r] for r in rows],
+                group_by_date=group_by_date, sheet_name_format=sheet_fmt)
+            if group_by_date:
+                detail = "、".join(f"{k}（{v} 条）" for k, v in sheets.items())
+                QMessageBox.information(
+                    self, "完成",
+                    f"已导出 {len(rows)} 条记录，共 {len(sheets)} 个 sheet：\n{detail}")
+            else:
+                QMessageBox.information(self, "完成",
+                                        f"已导出 {len(rows)} 条记录")
         except Exception as exc:
             QMessageBox.critical(self, "导出失败", str(exc))
 

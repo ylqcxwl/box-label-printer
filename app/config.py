@@ -23,9 +23,10 @@ DB_PATH: Path = DATA_DIR / "label_printer.db"
 PRINT_LOG: Path = DATA_DIR / "print_log.txt"
 # 打印记录单独存放：按年一个库文件，避免单文件过大导致查询卡顿
 RECORDS_DIR: Path = DATA_DIR / "records"
-# 模板（.btw）默认放在程序根目录下的 templates；
+# 模板（.btw）默认放在 data 目录下的 templates：
+# 与数据库、备份、打印记录归到一起，整个 data 拷走就是完整的一套。
 # 设置页留空即用这里，用户也可以改成自己的网络盘目录
-TEMPLATES_DIR: Path = ROOT / "templates"
+TEMPLATES_DIR: Path = DATA_DIR / "templates"
 
 
 def resolve_template_dir(setting: str = "") -> Path:
@@ -51,6 +52,12 @@ ASSETS_DIR: Path = assets_dir()
 DEFAULT_LOGO: Path = ASSETS_DIR / "logo.png"
 CUSTOM_LOGO: Path = DATA_DIR / "custom_logo.png"
 
+# 运行时「生成」的图片（如下拉箭头）统一放到程序根目录下的 assets，
+# 与 logo.ico / logo.png 合并到一个文件夹，不再另起 data/assets。
+# 注意与 ASSETS_DIR 区分：ASSETS_DIR 打包后指向只读的 _MEIPASS，
+# 这个才是可写的（打包后 = exe 所在目录）。
+ASSETS_WRITE_DIR: Path = ROOT / "assets"
+
 
 def ensure_dirs() -> None:
     """启动时确保数据目录与模板目录存在。"""
@@ -58,7 +65,4 @@ def ensure_dirs() -> None:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     RECORDS_DIR.mkdir(parents=True, exist_ok=True)
     # 模板目录也一并建出来：用户第一次打开设置就知道 .btw 该放哪
-    try:
-        TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass       # 只读盘等异常不影响程序启动
+    TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)

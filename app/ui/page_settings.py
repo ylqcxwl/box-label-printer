@@ -939,12 +939,20 @@ class SettingsPage(QWidget):
         left.addWidget(QLabel("模板文件夹"))
         tpl_row = QHBoxLayout()
         self.template_dir_edit = QLineEdit()
-        self.template_dir_edit.setPlaceholderText("留空使用程序根目录下的 templates")
+        self.template_dir_edit.setPlaceholderText("留空使用 data 目录下的 templates")
         tpl_row.addWidget(self.template_dir_edit, 1)
         tpl_btn = QPushButton("浏览…")
         tpl_btn.clicked.connect(self._browse_template_dir)
         tpl_row.addWidget(tpl_btn)
         left.addLayout(tpl_row)
+
+        left.addWidget(QLabel("导出 Excel 的 sheet 名称格式（按日期分表时用）"))
+        self.sheet_fmt_edit = QLineEdit()
+        self.sheet_fmt_edit.setPlaceholderText("留空为 yy.MM.dd，示例 26.10.19")
+        self.sheet_fmt_edit.setToolTip(
+            "占位符：yyyy=四位年  yy=两位年  MM=月  dd=日\n"
+            "例：yy.MM.dd -> 26.10.19；yyyy-MM-dd -> 2026-10-19")
+        left.addWidget(self.sheet_fmt_edit)
 
         left.addWidget(QLabel("工厂代码（用于 {FACTORY} 占位符）"))
         self.factory_edit = QLineEdit()
@@ -1097,6 +1105,8 @@ class SettingsPage(QWidget):
             printer_text = ""
         self.db.set_setting("default_printer", printer_text)
         self.db.set_setting("template_dir", self.template_dir_edit.text().strip())
+        self.db.set_setting("sheet_name_format",
+                            self.sheet_fmt_edit.text().strip() or "yy.MM.dd")
         self.db.set_setting("factory_code", self.factory_edit.text().strip())
         if self.password_edit.text():
             self.db.set_setting("delete_password", self.password_edit.text())
@@ -1209,6 +1219,8 @@ class SettingsPage(QWidget):
         self.printer_combo.setCurrentText(
             configured or system_default_printer())
         self.template_dir_edit.setText(self.db.get_setting("template_dir"))
+        self.sheet_fmt_edit.setText(
+            self.db.get_setting("sheet_name_format") or "")
         self.factory_edit.setText(self.db.get_setting("factory_code"))
         self.password_edit.clear()
         self.password_edit.setPlaceholderText("不修改请留空")
