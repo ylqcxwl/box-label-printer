@@ -37,7 +37,6 @@ FILTER_DEBOUNCE_MS = 300   # 输入后多久自动刷新（避免每敲一个字
 
 # 已勾选行的底色：选中态要「一眼可辨」，浅蓝底在白表格上足够醒目又不刺眼
 ROW_CHECKED_BG = QColor("#E3F0FF")
-ROW_CHECKED_BG_CSS = "#E3F0FF"
 
 
 class RecordRowDelegate(QStyledItemDelegate):
@@ -63,8 +62,12 @@ class RecordRowDelegate(QStyledItemDelegate):
         return bool(chk and chk.isChecked())
 
     def paint(self, painter, option, index) -> None:
-        # 第 0 列是勾选框容器（有自己的底色），不在这里重复铺
-        if index.column() > 0 and self._checked(index.row()):
+        # 整行一起铺（含第 0 列的勾选框列）：
+        # 之前只铺 column>0、第 0 列靠给勾选框容器设样式表上色，
+        # 但容器尺寸比单元格小一圈（实测 31x18 vs 44x31）且左偏，
+        # 结果最左边是个小色块，跟右边铺满整行的蓝色对不齐。
+        # 容器本身没有背景色（透明），所以委托铺的底色能透出来。
+        if self._checked(index.row()):
             painter.fillRect(option.rect, ROW_CHECKED_BG)
         super().paint(painter, option, index)
 
@@ -260,8 +263,6 @@ class RecordsPage(QWidget):
             row_idx = self.table.rowCount()
             self.table.insertRow(row_idx)
             chk_widget = QWidget()
-            # 给容器一个 objectName，行底色只作用于它自身，不会染到里面的复选框
-            chk_widget.setObjectName("rowChk")
             lay = QHBoxLayout(chk_widget)
             chk = QCheckBox()
             chk.setToolTip("点击勾选；按住 Shift 再点，可一次性选/取消一整段")
@@ -340,12 +341,6 @@ class RecordsPage(QWidget):
         rect.setLeft(0)
         rect.setRight(self.table.viewport().width())
         self.table.viewport().update(rect)
-        widget = self.table.cellWidget(row, 0)
-        if widget is not None:
-            widget.setStyleSheet(
-                f"QWidget#rowChk {{ background: {ROW_CHECKED_BG_CSS}; }}"
-                if checked else "")
-            widget.update()
 
 
 # 记录表要用委托画行底色，见 RecordRowDelegate 的说明
