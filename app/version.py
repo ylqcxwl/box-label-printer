@@ -4,4 +4,4 @@
 APP_NAME = "标签打印"
 APP_DISPLAY_NAME = "外箱标签打印程序"
 AUTHOR = "ylqc"
-VERSION = "0.0.1"
+VERSION = "0.0.2"
