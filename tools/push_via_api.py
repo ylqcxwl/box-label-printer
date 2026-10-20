@@ -36,6 +36,12 @@ API = "https://api.github.com"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Git Data API 单次 blob 上限 100MB，超过会直接拒绝
 MAX_BLOB_BYTES = 100 * 1024 * 1024
+MAX_RETRIES = 5                    # 沙箱代理抖动频繁，3 次不够用
+# 默认只重试这类明显是代理/服务端抖动的状态码
+RETRY_STATUS = (403, 500, 502, 503, 504)
+# 建 blob 时连 400 一起重试：代理掐断连接会伪装成
+# “malformed request”，并不是请求本身有问题
+RETRY_STATUS_BLOB = RETRY_STATUS + (400,)
 
 
 class GitHub:
@@ -45,12 +51,20 @@ class GitHub:
         self._token = token
 
     def _request(self, method: str, path: str,
-                 payload: Optional[Dict[str, Any]] = None) -> Tuple[int, Any]:
+                 payload: Optional[Dict[str, Any]] = None,
+                 retry_on: Tuple[int, ...] = RETRY_STATUS
+                 ) -> Tuple[int, Any]:
         """发起请求，返回 (状态码, JSON 或错误信息)。
 
         对偶发失败自动重试：本机走沙箱代理，实测会间歇性返回
         `403 The rule did not run because of a timeout` 或连接错误，
         重试一次基本都能过（曾遇到 PUT 首次 403、重试即 201）。
+
+        Args:
+            retry_on: 额外需要重试的状态码（默认空）。★ 建 blob 时要带 400 ——
+                代理被掐断时会伪装成
+                `400 We received a malformed request from your client`，
+                并不是请求真的有问题（同一批文件网络好转后全部能过）。
         """
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8") \
             if payload is not None else None
@@ -61,7 +75,7 @@ class GitHub:
             "Content-Type": "application/json",
         }
         last_status, last_info = 0, None
-        for attempt in range(3):
+        for attempt in range(MAX_RETRIES):
             req = urllib.request.Request(API + path, data=data,
                                          method=method, headers=headers)
             try:
@@ -76,19 +90,26 @@ class GitHub:
                 except json.JSONDecodeError:
                     last_status, last_info = exc.code, {"message": raw[:300]}
                 # 只有这类明显是代理/服务端抖动的状态码才重试
-                if exc.code not in (403, 500, 502, 503, 504):
+                if exc.code not in retry_on:
                     return last_status, last_info
             except (urllib.error.URLError, TimeoutError, OSError):
                 last_status, last_info = 0, {"message": "网络错误"}
-            if attempt < 2:
-                print(f"    请求失败（{last_status}），重试 {attempt + 2}/3 …")
-                time.sleep(2 * (attempt + 1))
+            if attempt < MAX_RETRIES - 1:
+                wait = 2 * (attempt + 1)
+                print(f"    请求失败（{last_status}），{wait}s 后重试 "
+                      f"{attempt + 2}/{MAX_RETRIES} …")
+                time.sleep(wait)
         return last_status, last_info
 
     def call(self, method: str, path: str,
-             payload: Optional[Dict[str, Any]] = None) -> Any:
-        """发起请求；非 2xx 直接抛出并带上接口返回的具体原因。"""
-        status, info = self._request(method, path, payload)
+             payload: Optional[Dict[str, Any]] = None,
+             retry_on: Tuple[int, ...] = RETRY_STATUS) -> Any:
+        """发起请求；非 2xx 直接抛出并带上接口返回的具体原因。
+
+        Args:
+            retry_on: 额外需要重试的 HTTP 状态码
+        """
+        status, info = self._request(method, path, payload, retry_on)
         if status >= 300:
             raise RuntimeError(f"{method} {path} 失败（HTTP {status}）：{info}")
         return info
@@ -248,7 +269,7 @@ def push_history(gh: GitHub, owner: str, repo: str, branch: str,
             info = gh.call("POST", f"/repos/{owner}/{repo}/git/blobs", {
                 "content": base64.b64encode(content).decode("ascii"),
                 "encoding": "base64",
-            })
+            }, retry_on=RETRY_STATUS_BLOB)
             blob_cache[blob_sha] = info["sha"]
 
         tree_sha = build_tree(gh, owner, repo, entries, blob_cache)

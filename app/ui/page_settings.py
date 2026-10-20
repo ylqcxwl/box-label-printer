@@ -946,13 +946,28 @@ class SettingsPage(QWidget):
         tpl_row.addWidget(tpl_btn)
         left.addLayout(tpl_row)
 
-        left.addWidget(QLabel("导出 Excel 的 sheet 名称格式（按日期分表时用）"))
+        # --- 打印记录导出设置：在这里定好，记录页点「导出」就直接按它导出 ---
+        export_title = QLabel("打印记录导出")
+        export_title.setStyleSheet("font-weight:bold;")
+        left.addWidget(export_title)
+
+        left.addWidget(QLabel("导出方式"))
+        self.export_mode_combo = QComboBox()
+        self.export_mode_combo.addItem("全部数据放在一个 sheet 里", "single")
+        self.export_mode_combo.addItem("按打印日期分别存到对应的 sheet", "date")
+        self.export_mode_combo.setToolTip(
+            "选好后，在「打印记录」页点导出会直接按这里的方式导出，不再弹窗询问")
+        left.addWidget(self.export_mode_combo)
+
+        left.addWidget(QLabel("sheet 名称格式（按日期分表时用）"))
         self.sheet_fmt_edit = QLineEdit()
         self.sheet_fmt_edit.setPlaceholderText("留空为 yy.MM.dd，示例 26.10.19")
         self.sheet_fmt_edit.setToolTip(
             "占位符：yyyy=四位年  yy=两位年  MM=月  dd=日\n"
             "例：yy.MM.dd -> 26.10.19；yyyy-MM-dd -> 2026-10-19")
         left.addWidget(self.sheet_fmt_edit)
+        self.export_mode_combo.currentIndexChanged.connect(
+            self._sync_export_mode)
 
         left.addWidget(QLabel("工厂代码（用于 {FACTORY} 占位符）"))
         self.factory_edit = QLineEdit()
@@ -993,6 +1008,13 @@ class SettingsPage(QWidget):
         btitle = QLabel("数据备份")
         btitle.setStyleSheet("font-weight:bold;font-size:15px;")
         backup.addWidget(btitle)
+
+        # 老版本只备主库、漏了打印记录，这里把范围写明，免得再误解
+        bdesc = QLabel("备份内容：主库（产品/规则/字段/系统设置）+ 打印记录，"
+                       "打包为一个 .zip")
+        bdesc.setObjectName("recordHint")
+        bdesc.setWordWrap(True)
+        backup.addWidget(bdesc)
 
         auto_row = QHBoxLayout()
         self.auto_backup_check = QCheckBox("开启每日自动备份  时间点")
@@ -1087,6 +1109,11 @@ class SettingsPage(QWidget):
             self.printer_combo.addItem(name)
         self.printer_combo.setCurrentText(current)
 
+    def _sync_export_mode(self) -> None:
+        """只有「按日期分表」才需要填 sheet 名称格式。"""
+        is_date = (self.export_mode_combo.currentData() or "date") == "date"
+        self.sheet_fmt_edit.setEnabled(is_date)
+
     def _browse_template_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择模板文件夹")
         if path:
@@ -1107,6 +1134,8 @@ class SettingsPage(QWidget):
         self.db.set_setting("template_dir", self.template_dir_edit.text().strip())
         self.db.set_setting("sheet_name_format",
                             self.sheet_fmt_edit.text().strip() or "yy.MM.dd")
+        self.db.set_setting("export_mode",
+                            self.export_mode_combo.currentData() or "date")
         self.db.set_setting("factory_code", self.factory_edit.text().strip())
         if self.password_edit.text():
             self.db.set_setting("delete_password", self.password_edit.text())
@@ -1141,14 +1170,14 @@ class SettingsPage(QWidget):
             QMessageBox.critical(self, "备份失败", str(exc))
 
     def _restore_backup(self) -> None:
-        start_dir = self.backup_dir_edit.text().strip() or str(backup_mod.BACKUP_DIR)
+        start_dir = self.backup_dir_edit.text().strip() or str(backup_mod.backup_dir())
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择备份文件", start_dir, "备份文件 (*.db)")
+            self, "选择备份文件", start_dir, "备份文件 (*.zip *.db)")
         if not path:
             return
         confirm = QMessageBox.question(
-            self, "确认恢复", "恢复后当前数据将被备份文件覆盖（当前库会自动留存一份"
-            " .before_restore.db）。\n确定继续吗？")
+            self, "确认恢复", "恢复会用备份文件覆盖当前的主库与打印记录"
+            "（恢复前会自动留存一份 data/before_restore.zip）。\n确定继续吗？")
         if confirm != QMessageBox.Yes:
             return
         try:
@@ -1221,6 +1250,10 @@ class SettingsPage(QWidget):
         self.template_dir_edit.setText(self.db.get_setting("template_dir"))
         self.sheet_fmt_edit.setText(
             self.db.get_setting("sheet_name_format") or "")
+        mode = self.db.get_setting("export_mode") or "date"
+        idx = self.export_mode_combo.findData(mode)
+        self.export_mode_combo.setCurrentIndex(idx if idx >= 0 else 1)
+        self._sync_export_mode()
         self.factory_edit.setText(self.db.get_setting("factory_code"))
         self.password_edit.clear()
         self.password_edit.setPlaceholderText("不修改请留空")
