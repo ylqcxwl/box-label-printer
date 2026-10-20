@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import QDate, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import (QApplication, QCheckBox, QDateEdit, QFileDialog, QFrame,
-                             QHBoxLayout, QInputDialog, QLabel,
+from PyQt5.QtWidgets import (QApplication, QCheckBox, QDateEdit, QFileDialog,
+                             QFrame, QHBoxLayout, QInputDialog, QLabel,
                              QLineEdit, QMessageBox, QPushButton,
                              QStyledItemDelegate, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget)
@@ -378,14 +378,9 @@ class RecordsPage(QWidget):
             self, "导出打印记录", "打印记录.xlsx", "Excel 文件 (*.xlsx)")
         if not path:
             return
-        from app.ui.export_choice import ExportChoiceDialog
-        dlg = ExportChoiceDialog(
-            default_format=self.db.get_setting("sheet_name_format", "yy.MM.dd")
-            or "yy.MM.dd",
-            record_count=len(rows), parent=self)
-        if dlg.exec_() != QDialog.Accepted:
-            return
-        group_by_date, sheet_fmt = dlg.result()
+        # 导出方式在「设置 - 系统设置 - 打印记录导出」里定，这里不再弹窗询问
+        group_by_date = (self.db.get_setting("export_mode") or "date") == "date"
+        sheet_fmt = self.db.get_setting("sheet_name_format") or "yy.MM.dd"
         try:
             sheets = excel_io.export_records(
                 Path(path), self.record_columns(),
