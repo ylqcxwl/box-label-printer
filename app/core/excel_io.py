@@ -204,16 +204,26 @@ def export_records(path: Path, columns: List[Tuple[str, str]],
         wb.save(str(path))
         return result
 
-    # 按日期分组：保持原始顺序，同一天的记录归到同一个 sheet
+    # 按日期分组，同一天的记录归到同一个 sheet
     groups: Dict[str, List[Dict[str, Any]]] = {}
-    order: List[str] = []
+    raw_date: Dict[str, str] = {}      # 表名 -> 该组第一条记录的原始日期
     for r in rows:
-        key = sheet_name_for_date(str(r.get(date_column, "")),
-                                  sheet_name_format)
+        raw = str(r.get(date_column, "") or "")
+        key = sheet_name_for_date(raw, sheet_name_format)
         if key not in groups:
             groups[key] = []
-            order.append(key)
+            raw_date[key] = raw
         groups[key].append(r)
+
+    # ★ sheet 从左往右按日期升序（26.10.20、26.10.21、26.10.22…）：
+    #   记录默认是倒序查出来的，照原顺序排会导致大日期在左边。
+    #   排序用**原始日期**而不是格式化后的表名——表名可能是 "MM.dd"
+    #   这类不含年份的格式，拿它排序会乱。日期为空的放最后。
+    order = sorted(
+        groups,
+        key=lambda k: (1 if not raw_date.get(k) else 0,
+                       raw_date.get(k, ""), k))
+
     used: Dict[str, int] = {}
     for key in order:
         # 同格式下不同日期撞名（如格式只写 MM）时加序号区分，避免覆盖
