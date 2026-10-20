@@ -49,6 +49,8 @@ BUILTIN_FIELDS = [
 # 打印记录可选列（产品字段列在此基础上动态追加）
 RECORD_BASE_COLUMNS = [
     ("box_no", "箱号"),
+    # 箱号序号 = 箱号里的流水号（今天第几箱），同一箱的多条记录这个值相同
+    ("box_seq", "箱号序号"),
     ("seq_in_box", "箱内序号"),
 ]
 RECORD_TAIL_COLUMNS = [
