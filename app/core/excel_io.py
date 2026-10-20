@@ -156,6 +156,11 @@ def sheet_name_for_date(date_text: str, fmt: str = "yy.MM.dd") -> str:
     return sanitize_sheet_name(out)
 
 
+def cell_text(value: Any) -> str:
+    """把单元格值转成文本：None 转空串，避免显示成 "None"。"""
+    return "" if value is None else str(value)
+
+
 def sanitize_sheet_name(name: str) -> str:
     """把字符串整理成合法的 Excel 工作表名。
 
@@ -192,7 +197,8 @@ def export_records(path: Path, columns: List[Tuple[str, str]],
     def fill(ws, data: List[Dict[str, Any]]) -> None:
         ws.append(headers)
         for r in data:
-            ws.append([str(r.get(cid, "")) for cid, _ in columns])
+            # 老记录某些列可能是 NULL（如 box_seq），直接 str() 会写出 "None"
+            ws.append([cell_text(r.get(cid)) for cid, _ in columns])
         _style_header(ws, len(headers))
         _auto_width(ws, len(headers), len(data))
 
