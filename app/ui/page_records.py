@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (QApplication, QCheckBox, QDateEdit, QFileDialog,
                              QTableWidgetItem, QVBoxLayout, QWidget)
 
 from app.core import excel_io, listconfig
+from app.core.excel_io import cell_text
 from app.core.bartender import (BarTender, resolve_printer,
                                template_path as template_path_abs)
 from app.core.db import DB, KIND_PRINT
@@ -276,7 +277,7 @@ class RecordsPage(QWidget):
             self.table.setCellWidget(row_idx, 0, chk_widget)
             for col_idx, (cid, _) in enumerate(columns, start=1):
                 self.table.setItem(row_idx, col_idx,
-                                   QTableWidgetItem(str(r.get(cid, ""))))
+                                   QTableWidgetItem(cell_text(r.get(cid))))
         # 列宽只在「列结构变化」时算一次，之后固定：
         # 否则每次查询结果变化整张表的列宽都会跳
         freeze_widths(self.table, self._width_cache,

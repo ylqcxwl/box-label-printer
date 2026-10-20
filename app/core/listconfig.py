@@ -62,13 +62,52 @@ def defaults(key: str, db: DB) -> List[Dict[str, Any]]:
     return []
 
 
+def merge_missing(stored: List[Dict[str, Any]],
+                  default: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把「默认值里有、但已存配置里没有」的列补进去。
+
+    ★ 为什么需要：列配置是存进 settings 的 JSON，一旦存过，
+      后续程序新增的列（如「箱号序号」）不会自动出现，用户永远看不到。
+      这里按默认顺序把缺失项插到它该在的位置，且**不动**用户已有的显隐与排序。
+
+    Args:
+        stored: 已保存的列配置
+        default: 当前版本的默认列定义
+
+    Returns:
+        补齐后的列表；没有缺失时原样返回
+    """
+    known = {c["id"] for c in stored}
+    missing = [c for c in default if c["id"] not in known]
+    if not missing:
+        return stored
+    merged = list(stored)
+    for entry in missing:
+        idx = next(i for i, d in enumerate(default) if d["id"] == entry["id"])
+        # 往前找第一个已存在的列，插到它后面，保持默认的相对顺序
+        anchor = None
+        for j in range(idx - 1, -1, -1):
+            if default[j]["id"] in known:
+                anchor = default[j]["id"]
+                break
+        pos = next((i for i, c in enumerate(merged) if c["id"] == anchor), None)
+        merged.append(entry) if pos is None else merged.insert(pos + 1, entry)
+        known.add(entry["id"])
+    return merged
+
+
 def load(db: DB, key: str) -> List[Dict[str, Any]]:
     """读取列配置；未保存过则写入并返回默认值。"""
     cols = db.get_json(key)
     if not cols:
         cols = defaults(key, db)
         db.set_json(key, cols)
-    return cols
+        return cols
+    # 补齐本版本新增、但旧配置里没有的列
+    merged = merge_missing(cols, defaults(key, db))
+    if len(merged) != len(cols):
+        db.set_json(key, merged)
+    return merged
 
 
 def visible_columns(db: DB, key: str) -> List[Dict[str, Any]]:
