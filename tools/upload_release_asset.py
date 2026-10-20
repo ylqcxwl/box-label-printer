@@ -41,11 +41,14 @@ CONTENT_TYPES = {
 
 
 def set_label(asset_id: int, label: str) -> None:
-    """给附件设中文显示名（label 字段支持中文，name 不支持）。"""
+    """给附件设中文显示名（label 字段支持中文，name 不支持）。
+
+    ★ 只传 label，不要传 name —— 把 name 传成 null 会被 GitHub 拒绝
+      （422 Unprocessable Entity）。PATCH 本来就只更新提供的字段。
+    """
     req = urllib.request.Request(
         f"https://api.github.com/repos/{REPO}/releases/assets/{asset_id}",
-        data=json.dumps({"name": None, "label": label},
-              ensure_ascii=False).encode("utf-8"),
+        data=json.dumps({"label": label}, ensure_ascii=False).encode("utf-8"),
         method="PATCH",
         headers={"Authorization": f"Bearer {TOKEN}",
                  "Accept": "application/vnd.github+json",
