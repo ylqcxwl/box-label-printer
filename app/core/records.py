@@ -149,6 +149,12 @@ class RecordStore:
             d = dict(r)
             d["id"] = encode_id(year, int(r["id"]))
             d["_year"] = year
+            # 打印时间拆成两列：print_date 只留日期、print_time 单独存时间。
+            # 需求是记录页「打印日期」只显示日期、具体时间另起一列。
+            # 放在这里派生，界面和导出都不用再做字符串截取。
+            raw = str(d.get("print_date") or "")
+            d["print_date"] = raw[:10]                 # 2026-10-16
+            d["print_time"] = raw[11:19] if len(raw) > 10 else ""   # 09:43:50
             out.append(d)
         return out
 
