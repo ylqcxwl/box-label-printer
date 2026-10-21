@@ -11,11 +11,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import QDate, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import (QApplication, QCheckBox, QDateEdit, QFileDialog,
-                             QFrame, QHBoxLayout, QInputDialog, QLabel,
-                             QLineEdit, QMessageBox, QPushButton,
-                             QStyledItemDelegate, QTableWidget,
-                             QTableWidgetItem, QVBoxLayout, QWidget)
+from PyQt5.QtWidgets import (QApplication, QDateEdit, QFileDialog, QFrame,
+                             QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+                             QMessageBox, QPushButton, QStyledItemDelegate,
+                             QTableWidget, QTableWidgetItem, QVBoxLayout,
+                             QWidget)
 
 from app.core import excel_io, listconfig
 from app.core.excel_io import cell_text
@@ -56,11 +56,15 @@ class RecordRowDelegate(QStyledItemDelegate):
         self._table = table
 
     def _checked(self, row: int) -> bool:
-        widget = self._table.cellWidget(row, 0)
-        if widget is None:
-            return False
-        chk = widget.findChild(QCheckBox)
-        return bool(chk and chk.isChecked())
+        """该行是否勾选（读第 0 列表格项的勾选状态）。
+
+        ★ 原来是每行塞一个 QWidget+QCheckBox 当 cellWidget，
+          1 万行就是 1 万个控件——实测 2.6 万行渲染要 17 分钟。
+          改成 QTableWidgetItem 自带的勾选状态后，控件数量归零。
+        """
+        item = self._table.item(row, 0)
+        return bool(item is not None
+                    and item.checkState() == Qt.Checked)
 
     def paint(self, painter, option, index) -> None:
         # 整行一起铺（含第 0 列的勾选框列）：
@@ -117,6 +121,8 @@ class RecordsPage(QWidget):
         self._width_cache: Dict[str, Any] = {}
         # Shift 范围选择的起点：上一次点击过的行号
         self._last_clicked_row: Optional[int] = None
+        # 程序化修改勾选状态期间置 True，避免 itemChanged 递归
+        self._applying: bool = False
         self._filter_timer = QTimer(self)
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(FILTER_DEBOUNCE_MS)
@@ -205,6 +211,8 @@ class RecordsPage(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         # 勾选整行的底色靠委托绘制（QSS 会盖掉 setBackground，见委托注释）
         self.table.setItemDelegate(RecordRowDelegate(self.table, self.table))
+        # 勾选列用的是表格项自带的勾选框，所以监听 itemChanged
+        self.table.itemChanged.connect(self._on_item_changed)
         root.addWidget(self.table, 1)
 
     # ================= 列配置 =================
@@ -260,24 +268,29 @@ class RecordsPage(QWidget):
         self.table.setColumnCount(len(columns) + 1)
         self.table.setHorizontalHeaderLabels([""] + [label for _, label in columns])
         self.table.setRowCount(0)
-        for r in self._rows:
-            row_idx = self.table.rowCount()
-            self.table.insertRow(row_idx)
-            chk_widget = QWidget()
-            lay = QHBoxLayout(chk_widget)
-            chk = QCheckBox()
-            chk.setToolTip("点击勾选；按住 Shift 再点，可一次性选/取消一整段")
-            # 用 clicked 而不是 toggled/stateChanged：
-            # setChecked() 不会触发 clicked，所以「全选」「Shift 范围选择」
-            # 里批量改状态都不会递归进来
-            chk.clicked.connect(lambda _c, r=row_idx: self._on_row_click(r))
-            lay.addWidget(chk)
-            lay.setAlignment(Qt.AlignCenter)
-            lay.setContentsMargins(0, 0, 0, 0)
-            self.table.setCellWidget(row_idx, 0, chk_widget)
-            for col_idx, (cid, _) in enumerate(columns, start=1):
-                self.table.setItem(row_idx, col_idx,
-                                   QTableWidgetItem(cell_text(r.get(cid))))
+
+        # ★ 批量填充期间关掉更新与排序：
+        #   不关的话每 insertRow / setItem 都会触发一次重绘与重排，
+        #   行数一多就是 O(n²)——这是 2.6 万行要渲染 17 分钟的主因之一。
+        self.table.setUpdatesEnabled(False)
+        self.table.setSortingEnabled(False)
+        # itemChanged 会在程序化 setCheckState 时也触发，用这个标志挡住递归
+        self._applying = True
+        try:
+            # 一次性建好所有行，再逐格填值（setRowCount 比逐行 insertRow 快得多）
+            self.table.setRowCount(len(self._rows))
+            for row_idx, r in enumerate(self._rows):
+                chk_item = QTableWidgetItem()
+                chk_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled
+                                  | Qt.ItemIsSelectable)
+                chk_item.setCheckState(Qt.Unchecked)
+                self.table.setItem(row_idx, 0, chk_item)
+                for col_idx, (cid, _) in enumerate(columns, start=1):
+                    self.table.setItem(row_idx, col_idx,
+                                       QTableWidgetItem(cell_text(r.get(cid))))
+        finally:
+            self._applying = False
+            self.table.setUpdatesEnabled(True)
         # 列宽只在「列结构变化」时算一次，之后固定：
         # 否则每次查询结果变化整张表的列宽都会跳
         freeze_widths(self.table, self._width_cache,
@@ -288,44 +301,56 @@ class RecordsPage(QWidget):
 
     # ================= 行选中着色 =================
 
-    def _row_checkbox(self, row: int) -> Optional[QCheckBox]:
-        """取该行的勾选框（找不到时返回 None）。"""
-        widget = self.table.cellWidget(row, 0)
-        return widget.findChild(QCheckBox) if widget is not None else None
+    def _row_item(self, row: int) -> Optional[QTableWidgetItem]:
+        """取该行第 0 列（勾选列）的表格项；不存在时返回 None。"""
+        return self.table.item(row, 0)
 
     def _row_checked(self, row: int) -> bool:
-        """该行的勾选框当前是否被选中。"""
-        chk = self._row_checkbox(row)
-        return bool(chk and chk.isChecked())
+        """该行当前是否被勾选。"""
+        item = self._row_item(row)
+        return bool(item is not None and item.checkState() == Qt.Checked)
 
     # ================= Shift 范围快速选择 =================
 
-    def _on_row_click(self, row: int) -> None:
-        """处理某一行勾选框的点击。
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        """勾选状态变化的处理入口（表格项的勾选框被点/被程序改都会触发）。
 
         按住 Shift 时，把「上次点击的行」到「这一行」之间的所有行
         一起设成同一状态，实现范围快速选择（与资源管理器里选文件一致）。
         不按 Shift 就只处理当前这一行。
+
+        ★ 与旧实现的区别：以前用 QCheckBox.clicked（只在用户点击时触发），
+          现在改用表格项后只能监听 itemChanged，而**程序化 setCheckState
+          也会触发它**，所以必须用 self._applying 挡住递归。
         """
-        chk = self._row_checkbox(row)
-        if chk is None:
+        if self._applying or item.column() != 0:
             return
-        target = chk.isChecked()
+        row = item.row()
+        target = item.checkState() == Qt.Checked
         if (QApplication.keyboardModifiers() & Qt.ShiftModifier
                 and self._last_clicked_row is not None
                 and self._last_clicked_row != row):
             lo, hi = sorted((self._last_clicked_row, row))
-            for r in range(lo, hi + 1):
-                box = self._row_checkbox(r)
-                if box is not None and box.isChecked() != target:
-                    box.setChecked(target)      # 不触发 clicked，不会递归
+            self.set_rows_checked(range(lo, hi + 1), target)
             self._repaint_rows(range(lo, hi + 1))
         else:
             self._paint_row(row, target)
         self._last_clicked_row = row
 
+    def set_rows_checked(self, rows, checked: bool) -> None:
+        """批量设置若干行的勾选状态（不会递归触发处理逻辑）。"""
+        state = Qt.Checked if checked else Qt.Unchecked
+        self._applying = True
+        try:
+            for r in rows:
+                item = self._row_item(r)
+                if item is not None and item.checkState() != state:
+                    item.setCheckState(state)
+        finally:
+            self._applying = False
+
     def _repaint_rows(self, rows) -> None:
-        """批量刷新若干行的显示（底色 + 勾选框容器背景）。"""
+        """批量刷新若干行的显示（整行底色）。"""
         for r in rows:
             self._paint_row(r, self._row_checked(r))
 
@@ -347,23 +372,16 @@ class RecordsPage(QWidget):
 # 记录表要用委托画行底色，见 RecordRowDelegate 的说明
 
     def _selected_rows(self) -> List[int]:
-        result = []
-        for r in range(self.table.rowCount()):
-            chk = self.table.cellWidget(r, 0).findChild(QCheckBox)
-            if chk and chk.isChecked():
-                result.append(r)
-        return result
+        """已勾选的行号（导出 / 删除选中都用它）。"""
+        return [r for r in range(self.table.rowCount()) if self._row_checked(r)]
 
     def _toggle_select_all(self) -> None:
         rows = self.table.rowCount()
         if not rows:
             return
-        checked = [bool(self.table.cellWidget(r, 0).findChild(QCheckBox).isChecked())
-                   for r in range(rows)]
+        checked = [self._row_checked(r) for r in range(rows)]
         target = not all(checked)
-        for r in range(rows):
-            self.table.cellWidget(r, 0).findChild(QCheckBox).setChecked(target)
-        # setChecked 不会触发 clicked，着色得自己补一次
+        self.set_rows_checked(range(rows), target)
         self._repaint_rows(range(rows))
         # 全选是批量操作，不该成为下一次 Shift 选择的起点
         self._last_clicked_row = None
