@@ -58,6 +58,8 @@ RECORD_TAIL_COLUMNS = [
     ("batch", "批次"),
     ("produce_date", "生产日期"),
     ("print_date", "打印日期"),
+    # 打印时间单独一列（值由 records._run 从 print_date 里派生）
+    ("print_time", "打印时间"),
 ]
 
 DEFAULT_BOX_RULES = [
