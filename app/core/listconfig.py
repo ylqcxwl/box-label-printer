@@ -140,7 +140,7 @@ def sync_with_fields(db: DB) -> None:
     """字段映射增删改后，同步全部列表配置。
 
     - 已删除的字段：从各列表里移除；
-    - 新增的字段：补到列表末尾（打印记录里默认不勾选，表格列已经很多）；
+    - 新增的字段：补到列表末尾并默认勾选（不需要的到「列表设置」里取消）；
     - 显示名称变更：同步更新表头文字。
     """
     fields = {f["fkey"]: f["label"] for f in db.list_product_fields()}
@@ -163,7 +163,9 @@ def sync_with_fields(db: DB) -> None:
             cid = "field:" + f["fkey"]
             if cid in seen:
                 continue
-            # 打印记录默认不勾选，其余列表默认勾选
-            kept.append(_entry(cid, f["label"],
-                               visible=(key != "record_columns")))
+            # ★ 新增字段默认**全部勾选**：
+            #   以前只有打印记录默认不勾（怕表格列太多），
+            #   但用户反馈新增了字段却在列表里看不到，以为没生效；
+            #   现在统一默认勾选，不需要的列到「列表设置」里取消即可。
+            kept.append(_entry(cid, f["label"], visible=True))
         db.set_json(key, kept)
