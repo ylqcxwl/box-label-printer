@@ -25,6 +25,8 @@ _perfcheck*.py
 _chkprobe*.py
 _btncheck*.py
 _layoutcheck*.py
+_*.py.bak
+_stress.py
 
 # 运行时生成的图片：下拉箭头等由 icons.py 在启动时画进 assets/，
 # 属于缓存，不需要进仓库（assets/logo.ico 与 logo.png 是程序图标，要入库）

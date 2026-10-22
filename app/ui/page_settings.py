@@ -870,6 +870,9 @@ class SettingsPage(QWidget):
         except ValueError as exc:
             QMessageBox.warning(self, "无法删除", str(exc))
             return
+        # ★ 原来删完只刷新字段表，没同步列表配置：
+        #   已删的字段仍留在「列表设置」四个列表里（界面上能看到却取不到值）
+        self._sync_field_lists()
         self._reload_fields()
         self.settings_saved.emit()
 
@@ -883,6 +886,14 @@ class SettingsPage(QWidget):
         self._reload_columns()
 
     # ---------------- 列表设置 ----------------
+
+    #: 四栏说明：精简成一句，长度接近，保证固定高度下都装得下
+    _LIST_HINTS = {
+        "print_product_columns": "勾选要显示的列，选中后上移 / 下移调顺序。",
+        "record_columns": "勾选要显示的列，选中后上移 / 下移调顺序。",
+        "product_columns": "勾选要显示的列，选中后上移 / 下移调顺序。",
+        "product_form_order": "控制弹窗里各项的顺序，取消勾选即隐藏。",
+    }
 
     #: 列表设置里四栏的固定顺序（按用户要求：打印页待选 / 打印记录 / 产品管理 / 产品新增）
     LIST_ORDER = ("print_product_columns", "record_columns",
@@ -942,13 +953,16 @@ class SettingsPage(QWidget):
         title.setStyleSheet("font-weight:bold;font-size:13px;")
         box.addWidget(title)
 
-        desc = next((d for k, _t, d in listconfig.LIST_DEFS if k == key), "")
-        if key == "product_columns":
-            desc += "（ID 列用于定位产品，始终显示）"
+        # ★ 说明统一成一句短的、并固定高度：
+        #   原来「产品管理」比别的栏多一句「（ID 列…）」，换行后占 3 行，
+        #   把它下面那个列表框顶得比其余三栏矮一截，四栏底部对不齐。
+        desc = self._LIST_HINTS.get(key, "")
         desc_label = QLabel(desc)
         desc_label.setObjectName("recordHint")
         desc_label.setWordWrap(True)
-        desc_label.setMinimumHeight(32)      # 四栏标题下的说明高度对齐
+        desc_label.setFixedHeight(38)        # 固定高 = 四栏列表框顶端对齐
+        if key == "product_columns":
+            desc_label.setToolTip("ID 列用于定位产品（编辑/删除要靠它），始终显示")
         box.addWidget(desc_label)
 
         lst = QListWidget()
