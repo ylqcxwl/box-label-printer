@@ -4,6 +4,7 @@
 五个选项卡：箱号规则 / SN 规则 / 字段映射 / 列表设置 / 系统设置。
 """
 
+import os
 from datetime import date
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -21,6 +22,7 @@ from app.core import backup as backup_mod
 from app.core import listconfig
 from app.core import rules as rule_engine
 from app.core import updater
+from app.config import resolve_template_dir
 from app.core.bartender import list_printers, system_default_printer
 from app.core.db import DB, KIND_PRINT, KIND_PRODUCT
 from app.ui import icons
@@ -908,6 +910,23 @@ class SettingsPage(QWidget):
 
     # ---------------- 系统设置 ----------------
 
+    def _group_title(self, text: str) -> QWidget:
+        """系统设置左列的分区标题（标题 + 一条细分隔线），用于划分功能区域。"""
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 8, 0, 0)
+        lay.setSpacing(5)
+        line = QFrame()
+        line.setFixedHeight(1)
+        line.setStyleSheet("background:#E5E8EC;border:none;")
+        lay.addWidget(line)
+        label = QLabel(text)
+        label.setStyleSheet(
+            "color:#1F4E79;font-weight:bold;font-size:13px;"
+            "padding-top:2px;")
+        lay.addWidget(label)
+        return box
+
     def _build_system_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
@@ -936,30 +955,37 @@ class SettingsPage(QWidget):
         printer_row.addWidget(refresh_btn)
         left.addLayout(printer_row)
 
+        # ===== 分区二：模板 =====
+        left.addWidget(self._group_title("模板"))
+
         left.addWidget(QLabel("模板文件夹"))
         tpl_row = QHBoxLayout()
         self.template_dir_edit = QLineEdit()
-        self.template_dir_edit.setPlaceholderText("留空使用 data 目录下的 templates")
+        self.template_dir_edit.setPlaceholderText(
+            "留空使用程序目录 data/templates")
         tpl_row.addWidget(self.template_dir_edit, 1)
         tpl_btn = QPushButton("浏览…")
         tpl_btn.clicked.connect(self._browse_template_dir)
         tpl_row.addWidget(tpl_btn)
+        tpl_open = QPushButton("打开")
+        tpl_open.setToolTip("在资源管理器中打开该文件夹")
+        tpl_open.clicked.connect(self._open_template_dir)
+        tpl_row.addWidget(tpl_open)
         left.addLayout(tpl_row)
 
-        # --- 打印记录导出设置：在这里定好，记录页点「导出」就直接按它导出 ---
-        export_title = QLabel("打印记录导出")
-        export_title.setStyleSheet("font-weight:bold;")
-        left.addWidget(export_title)
+        # ===== 分区三：打印记录导出 =====
+        # 在这里定好，记录页点「导出」就直接按它导出，不再弹窗询问
+        left.addWidget(self._group_title("打印记录导出"))
 
         left.addWidget(QLabel("导出方式"))
         self.export_mode_combo = QComboBox()
-        self.export_mode_combo.addItem("全部数据放在一个 sheet 里", "single")
-        self.export_mode_combo.addItem("按打印日期分别存到对应的 sheet", "date")
+        self.export_mode_combo.addItem("全部数据放在一个工作表里", "single")
+        self.export_mode_combo.addItem("按打印日期分别存到对应的工作表", "date")
         self.export_mode_combo.setToolTip(
             "选好后，在「打印记录」页点导出会直接按这里的方式导出，不再弹窗询问")
         left.addWidget(self.export_mode_combo)
 
-        left.addWidget(QLabel("sheet 名称格式（按日期分表时用）"))
+        left.addWidget(QLabel("工作表名称格式（按日期分表时用）"))
         self.sheet_fmt_edit = QLineEdit()
         self.sheet_fmt_edit.setPlaceholderText("留空为 yy.MM.dd，示例 26.10.19")
         self.sheet_fmt_edit.setToolTip(
@@ -968,6 +994,20 @@ class SettingsPage(QWidget):
         left.addWidget(self.sheet_fmt_edit)
         self.export_mode_combo.currentIndexChanged.connect(
             self._sync_export_mode)
+
+        left.addWidget(QLabel("打印记录页默认显示周期"))
+        self.record_range_combo = QComboBox()
+        for text, key in (("今天", "1d"), ("近一周", "7d"),
+                          ("近一月", "30d"), ("近三月", "90d"),
+                          ("近一年", "365d"), ("全部", "all")):
+            self.record_range_combo.addItem(text, key)
+        self.record_range_combo.setToolTip(
+            "打开「打印记录」页时，日期范围默认按这里初始化；"
+            "页面上仍可随时手动改")
+        left.addWidget(self.record_range_combo)
+
+        # ===== 分区四：其他 =====
+        left.addWidget(self._group_title("其他"))
 
         left.addWidget(QLabel("工厂代码（用于 {FACTORY} 占位符）"))
         self.factory_edit = QLineEdit()
@@ -1009,13 +1049,6 @@ class SettingsPage(QWidget):
         btitle.setStyleSheet("font-weight:bold;font-size:15px;")
         backup.addWidget(btitle)
 
-        # 老版本只备主库、漏了打印记录，这里把范围写明，免得再误解
-        bdesc = QLabel("备份内容：主库（产品/规则/字段/系统设置）+ 打印记录，"
-                       "打包为一个 .zip")
-        bdesc.setObjectName("recordHint")
-        bdesc.setWordWrap(True)
-        backup.addWidget(bdesc)
-
         auto_row = QHBoxLayout()
         self.auto_backup_check = QCheckBox("开启每日自动备份  时间点")
         auto_row.addWidget(self.auto_backup_check)
@@ -1031,13 +1064,20 @@ class SettingsPage(QWidget):
         auto_row.addStretch(1)
         backup.addLayout(auto_row)
 
-        backup.addWidget(QLabel("备份目录（留空则使用程序目录 data/backup）"))
+        # 说明文字放进输入框里（placeholder），省一行、界面更清爽
+        backup.addWidget(QLabel("备份目录"))
         bdir_row = QHBoxLayout()
         self.backup_dir_edit = QLineEdit()
+        self.backup_dir_edit.setPlaceholderText(
+            "留空使用程序目录 data/backup")
         bdir_row.addWidget(self.backup_dir_edit, 1)
         bdir_btn = QPushButton("浏览…")
         bdir_btn.clicked.connect(self._browse_backup_dir)
         bdir_row.addWidget(bdir_btn)
+        bdir_open = QPushButton("打开")
+        bdir_open.setToolTip("在资源管理器中打开备份文件夹")
+        bdir_open.clicked.connect(self._open_backup_dir)
+        bdir_row.addWidget(bdir_open)
         backup.addLayout(bdir_row)
 
         bbtn_row = QHBoxLayout()
@@ -1051,6 +1091,13 @@ class SettingsPage(QWidget):
         bbtn_row.addWidget(restore_btn)
         bbtn_row.addStretch(1)
         backup.addLayout(bbtn_row)
+
+        # 备份内容说明放到按钮下方（原来在标题下面，把操作区顶得很散）
+        bdesc = QLabel("备份内容：主库（产品 / 规则 / 字段 / 系统设置）"
+                       "+ 打印记录，打包为一个 .zip 文件")
+        bdesc.setObjectName("recordHint")
+        bdesc.setWordWrap(True)
+        backup.addWidget(bdesc)
         right.addWidget(backup_card)
 
         update_card = QFrame()
@@ -1067,11 +1114,20 @@ class SettingsPage(QWidget):
         update.addWidget(QLabel("仓库地址（owner/repo 或完整 GitHub 地址，可留空）"))
         repo_row = QHBoxLayout()
         self.repo_edit = QLineEdit()
+        self.repo_edit.setPlaceholderText("如 ylqcxwl/box-label-printer")
         repo_row.addWidget(self.repo_edit, 1)
         check_btn = QPushButton("检查更新")
         check_btn.clicked.connect(self._check_update_now)
         repo_row.addWidget(check_btn)
         update.addLayout(repo_row)
+
+        # ★ 令牌不常驻界面：只有连不上仓库（如私有仓库）时才弹窗索要一次，
+        #   平时不显示这个输入框，界面更干净、也避免误改
+        self._token_hint = QLabel("")
+        self._token_hint.setObjectName("recordHint")
+        self._token_hint.setWordWrap(True)
+        self._token_hint.hide()
+        update.addWidget(self._token_hint)
         self.update_status = QLabel(f"当前版本 v{VERSION}")
         self.update_status.setObjectName("sectionTitle")
         self.update_status.setWordWrap(True)
@@ -1114,6 +1170,39 @@ class SettingsPage(QWidget):
         is_date = (self.export_mode_combo.currentData() or "date") == "date"
         self.sheet_fmt_edit.setEnabled(is_date)
 
+    def _open_folder(self, folder: str, hint: str) -> None:
+        """用资源管理器打开目录；目录不存在就先建出来。
+
+        Args:
+            folder: 目标目录（空串表示按 hint 提示用户去设置）
+            hint: 目标目录为空时的处理说明
+        """
+        if not folder:
+            QMessageBox.information(self, "提示", hint)
+            return
+        path = Path(folder)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(self, "无法创建目录", f"{path}\n{exc}")
+            return
+        try:
+            os.startfile(str(path))       # Windows 资源管理器
+        except (AttributeError, OSError) as exc:
+            QMessageBox.warning(self, "无法打开", f"{path}\n{exc}")
+
+    def _open_template_dir(self) -> None:
+        """打开模板文件夹（留空则打开默认的 data/templates）。"""
+        folder = (self.template_dir_edit.text().strip()
+                  or str(resolve_template_dir("")))
+        self._open_folder(folder, "模板目录无效")
+
+    def _open_backup_dir(self) -> None:
+        """打开备份文件夹（留空则打开默认的 data/backup）。"""
+        folder = (self.backup_dir_edit.text().strip()
+                  or str(backup_mod.backup_dir()))
+        self._open_folder(folder, "备份目录无效")
+
     def _browse_template_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择模板文件夹")
         if path:
@@ -1136,6 +1225,8 @@ class SettingsPage(QWidget):
                             self.sheet_fmt_edit.text().strip() or "yy.MM.dd")
         self.db.set_setting("export_mode",
                             self.export_mode_combo.currentData() or "date")
+        self.db.set_setting("record_default_range",
+                            self.record_range_combo.currentData() or "30d")
         self.db.set_setting("factory_code", self.factory_edit.text().strip())
         if self.password_edit.text():
             self.db.set_setting("delete_password", self.password_edit.text())
@@ -1192,24 +1283,103 @@ class SettingsPage(QWidget):
         if not repo:
             QMessageBox.information(self, "提示", "请先填写仓库地址")
             return
+        self._start_update_check(repo)
+
+    def _start_update_check(self, repo: str) -> None:
+        """发起一次检查更新（内部读已保存的令牌）。"""
+        self.update_status.setStyleSheet("color:#5A6068;")
         self.update_status.setText("正在检查更新…")
+        self._check_repo = repo
         from app.ui.main_window import UpdateCheckThread
-        self._update_thread = UpdateCheckThread(repo)
-        self._update_thread.result.connect(self.show_update_result)
+        self._update_thread = UpdateCheckThread(
+            repo, self.db.get_setting("update_token") or "")
+        self._update_thread.result.connect(self._on_update_result)
         self._update_thread.start()
 
+    def _on_update_result(self, info: dict) -> None:
+        """检查结果：需要令牌时弹窗索要并重试，否则直接显示。
+
+        ★ 令牌不放在常驻输入框里，而是「连不上才问一次」：
+          公开仓库、或已存过有效令牌时，用户完全不会被打扰。
+        """
+        if isinstance(info, dict) and info.get("need_token"):
+            self._ask_token_and_retry(info)
+            return
+        self._token_hint.hide()
+        self.show_update_result(info)
+
+    def show_token_needed(self, info: dict) -> None:
+        """启动时检查发现需要令牌：只留提示，不弹窗（避免启动即打扰）。"""
+        self._token_hint.setText(
+            f"{info.get('message', '无法访问仓库')} —— "
+            "点「检查更新」可填写访问令牌")
+        self._token_hint.show()
+        self.update_status.setText(f"当前版本 v{VERSION} ｜ 无法检查更新")
+        self.update_status.setStyleSheet("color:#D9363E;")
+        self.download_btn.hide()
+
+    def _ask_token_and_retry(self, info: dict) -> None:
+        """弹窗索要访问令牌；用户填了就存下并立刻重试一次。"""
+        token, ok = QInputDialog.getText(
+            self, "需要提供访问令牌",
+            f"{info.get('message', '无法访问仓库')}\n\n"
+            "私有仓库的发布版无法匿名查询，请填写 GitHub 个人访问令牌\n"
+            "（只需 repo 读取权限；会保存在本机，仅用于检查更新）：",
+            QLineEdit.Password)
+        if not ok or not token.strip():
+            self._token_hint.setText(
+                "未填写访问令牌，检查更新不可用（点「检查更新」可重新填写）")
+            self._token_hint.show()
+            self.update_status.setText(f"检查失败：{info.get('message', '')}")
+            self.update_status.setStyleSheet("color:#D9363E;")
+            self.download_btn.hide()
+            return
+        self.db.set_setting("update_token", token.strip())
+        self._token_hint.setText("已保存访问令牌（如需更换，再次检查失败时会重新询问）")
+        self._token_hint.show()
+        self._start_update_check(self._check_repo)      # 带上新令牌重试
+
     def _save_silent(self) -> None:
+        # 令牌不在这里保存：它由「检查失败时弹窗」单独写入，避免被空值覆盖
         self.db.set_setting("update_repo", self.repo_edit.text().strip())
 
     def show_update_result(self, info: Optional[dict]) -> None:
-        self._latest_update = info
-        if info:
-            self.update_status.setText(
-                f"当前版本 v{VERSION} ｜ 最新版本 {info['version']}（有可用更新）")
-            self.download_btn.setVisible(bool(info.get("url")))
-        else:
-            self.update_status.setText(f"当前版本 v{VERSION} ｜ 已是最新版本")
+        """显示检查结果。
+
+        兼容两种返回：新版返回 {"status":..., "message":...}，
+        旧版（以及外部只关心有无更新）可能传 None 或 {"version":...}。
+        """
+        if not isinstance(info, dict):
+            self._latest_update = None
+            self.update_status.setText(f"当前版本 v{VERSION} ｜ 暂无更新信息")
             self.download_btn.hide()
+            return
+
+        status = info.get("status")
+        msg = info.get("message") or ""
+
+        if status == "update":
+            self._latest_update = info
+            self.update_status.setText(
+                f"当前版本 v{VERSION} ｜ {msg}")
+            self.update_status.setStyleSheet("color:#1E9E50;")
+            self.download_btn.setVisible(bool(info.get("url")))
+        elif status == "none":
+            self._latest_update = None
+            self.update_status.setText(f"当前版本 v{VERSION} ｜ {msg or '已是最新版本'}")
+            self.update_status.setStyleSheet("color:#5A6068;")
+            self.download_btn.hide()
+        elif status == "error":
+            self._latest_update = None
+            self.update_status.setText(f"检查失败：{msg}")
+            self.update_status.setStyleSheet("color:#D9363E;")
+            self.download_btn.hide()
+        else:      # skip 或旧式返回
+            self._latest_update = info if info.get("url") else None
+            self.update_status.setText(
+                f"当前版本 v{VERSION} ｜ {msg or '已是最新版本'}")
+            self.update_status.setStyleSheet("color:#5A6068;")
+            self.download_btn.setVisible(bool(self._latest_update))
 
     def _download_update(self) -> None:
         if not self._latest_update or not self._latest_update.get("url"):
@@ -1250,6 +1420,9 @@ class SettingsPage(QWidget):
         self.template_dir_edit.setText(self.db.get_setting("template_dir"))
         self.sheet_fmt_edit.setText(
             self.db.get_setting("sheet_name_format") or "")
+        rng = self.db.get_setting("record_default_range") or "30d"
+        ridx = self.record_range_combo.findData(rng)
+        self.record_range_combo.setCurrentIndex(ridx if ridx >= 0 else 2)
         mode = self.db.get_setting("export_mode") or "date"
         idx = self.export_mode_combo.findData(mode)
         self.export_mode_combo.setCurrentIndex(idx if idx >= 0 else 1)

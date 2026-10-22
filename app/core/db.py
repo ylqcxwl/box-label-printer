@@ -110,6 +110,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "template_dir": "",            # 空 = data 目录下的 templates
     "sheet_name_format": "yy.MM.dd",   # 导出 Excel 按日期分表时的 sheet 名格式
     "export_mode": "date",             # 打印记录导出方式：single=单表 / date=按日期分表
+    "record_default_range": "30d",     # 打印记录页默认显示周期：1d/7d/30d/90d/365d/all
+    "update_token": "",                # GitHub 访问令牌（私有仓库检查更新用）
     "delete_password": "123456",
     "auto_backup": False,
     "backup_time": "18:00",

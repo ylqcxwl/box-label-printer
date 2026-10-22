@@ -128,6 +128,14 @@ class RecordsPage(QWidget):
         self._filter_timer.setInterval(FILTER_DEBOUNCE_MS)
         self._filter_timer.timeout.connect(self.reload)
         self._build_ui()
+        # 打开页面就用「系统设置 - 默认显示周期」初始化日期范围。
+        # 先屏蔽信号再设日期，避免 setDate 触发多次 reload
+        self.date_from.blockSignals(True)
+        self.date_to.blockSignals(True)
+        self._apply_default_range()
+        self.date_from.blockSignals(False)
+        self.date_to.blockSignals(False)
+        self.reload()
 
     # ================= UI =================
 
@@ -232,8 +240,25 @@ class RecordsPage(QWidget):
         self._filter_timer.stop()
         self.reload()
 
+    #: 系统设置里可选的默认显示周期 -> 起始日期偏移（天）
+    RANGE_OFFSETS = {"1d": 0, "7d": 6, "30d": 29, "90d": 89, "365d": 364}
+
+    def _apply_default_range(self) -> None:
+        """按「系统设置 - 打印记录页默认显示周期」设置日期范围。
+
+        all 表示不限制起始日期（用一个足够早的日期），
+        其余按天数往前推：1d=今天、7d=近一周、30d=近一月…
+        """
+        key = (self.db.get_setting("record_default_range") or "30d").strip()
+        today = QDate.currentDate()
+        if key == "all":
+            self.date_from.setDate(QDate(2000, 1, 1))
+        else:
+            self.date_from.setDate(today.addDays(-self.RANGE_OFFSETS.get(key, 29)))
+        self.date_to.setDate(today)
+
     def _reset_filter(self) -> None:
-        """重置筛选条件：清空 SN / 箱号，日期回到「近一个月 ~ 今天」。"""
+        """重置筛选条件：清空 SN / 箱号，日期按设置的默认周期重新初始化。"""
         self._filter_timer.stop()
         self.sn_edit.blockSignals(True)
         self.box_edit.blockSignals(True)
@@ -241,8 +266,7 @@ class RecordsPage(QWidget):
         self.date_to.blockSignals(True)
         self.sn_edit.clear()
         self.box_edit.clear()
-        self.date_from.setDate(QDate.currentDate().addMonths(-1))
-        self.date_to.setDate(QDate.currentDate())
+        self._apply_default_range()
         self.date_from.blockSignals(False)
         self.date_to.blockSignals(False)
         self.sn_edit.blockSignals(False)
@@ -409,7 +433,7 @@ class RecordsPage(QWidget):
                 detail = "、".join(f"{k}（{v} 条）" for k, v in sheets.items())
                 QMessageBox.information(
                     self, "完成",
-                    f"已导出 {len(rows)} 条记录，共 {len(sheets)} 个 sheet：\n{detail}")
+                    f"已导出 {len(rows)} 条记录，共 {len(sheets)} 个工作表：\n{detail}")
             else:
                 QMessageBox.information(self, "完成",
                                         f"已导出 {len(rows)} 条记录")

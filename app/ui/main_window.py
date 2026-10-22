@@ -57,12 +57,13 @@ class UpdateCheckThread(QThread):
     """后台检查更新（不阻塞启动）。"""
     result = pyqtSignal(object)
 
-    def __init__(self, repo: str):
+    def __init__(self, repo: str, token: str = ""):
         super().__init__()
         self._repo = repo
+        self._token = token
 
     def run(self) -> None:
-        self.result.emit(updater.check_latest(self._repo))
+        self.result.emit(updater.check_latest(self._repo, self._token))
 
 
 class TitleBar(QFrame):
@@ -685,14 +686,24 @@ class MainWindow(QMainWindow):
     # ---------------- 更新 ----------------
 
     def _check_update(self) -> None:
-        self._update_thread = UpdateCheckThread(self.db.get_setting("update_repo"))
+        self._update_thread = UpdateCheckThread(
+            self.db.get_setting("update_repo"),
+            self.db.get_setting("update_token") or "")
         self._update_thread.result.connect(self._on_update_result)
         self._update_thread.start()
 
     def _on_update_result(self, info: Optional[dict]) -> None:
-        self._update_info = info
-        self.sidebar.set_update_hint(info is not None)
-        self.settings_page.show_update_result(info)
+        """启动时的后台检查结果。
+
+        ★ 这里**不弹窗**：启动就弹令牌窗口太打扰。
+          需要令牌时只在设置页留一句提示，由用户点「检查更新」时再问。
+        """
+        self._update_info = info if (info or {}).get("status") == "update" else None
+        self.sidebar.set_update_hint(bool(self._update_info))
+        if isinstance(info, dict) and info.get("need_token"):
+            self.settings_page.show_token_needed(info)
+        else:
+            self.settings_page.show_update_result(info)
 
     def _on_settings_saved(self) -> None:
         self.bartender.mock = self.db.get_bool("bartender_mock")
