@@ -14,10 +14,11 @@ from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                              QFileDialog, QFormLayout, QGridLayout, QHBoxLayout,
                              QFrame, QHeaderView, QInputDialog, QLabel, QLineEdit,
                              QListWidget, QListWidgetItem, QMessageBox,
-                             QPlainTextEdit, QPushButton, QSpinBox, QTabWidget,
+                             QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QTabWidget,
                              QTableWidget, QTableWidgetItem, QTextBrowser,
                              QVBoxLayout, QWidget)
 
+from app.core import excel_io
 from app.core import backup as backup_mod
 from app.core import listconfig
 from app.core import rules as rule_engine
@@ -25,6 +26,7 @@ from app.core import updater
 from app.config import resolve_template_dir
 from app.core.bartender import list_printers, system_default_printer
 from app.core.db import DB, KIND_PRINT, KIND_PRODUCT
+from app.ui.title_button import TitleButton
 from app.ui import icons
 from app.version import VERSION
 
@@ -70,9 +72,8 @@ class RuleDialog(QDialog):
         title_label.setObjectName("dlgTitle")
         bar_layout.addWidget(title_label)
         bar_layout.addStretch(1)
-        close_btn = QPushButton("✕")
-        close_btn.setObjectName("dlgClose")
-        close_btn.setFixedSize(32, 28)
+        # ★ 图标自绘，不依赖字体字形（Win7 上 ✕ 可能缺字形变成空白）
+        close_btn = TitleButton(TitleButton.CLOSE, danger=True)
         close_btn.clicked.connect(self.reject)
         bar_layout.addWidget(close_btn)
         root.addWidget(bar)
@@ -701,15 +702,88 @@ class SettingsPage(QWidget):
         layout.addWidget(self.fields_table, 1)
 
         btns = QHBoxLayout()
-        btns.addStretch(1)
-        for text, slot in (("新增字段", self._add_field),
-                           ("编辑", self._edit_field),
-                           ("删除", self._del_field)):
+        # 左侧：整表操作（导入 / 导出 / 恢复默认）
+        for text, slot, oid in (("导入", self._import_fields, ""),
+                                ("导出", self._export_fields, ""),
+                                ("恢复默认", self._reset_fields, "danger")):
             btn = QPushButton(text)
+            if oid:
+                btn.setObjectName(oid)
+            btn.clicked.connect(slot)
+            btns.addWidget(btn)
+        btns.addStretch(1)
+        # 右侧：单行操作
+        for text, slot, oid in (("新增字段", self._add_field, "primary"),
+                                ("编辑", self._edit_field, ""),
+                                ("删除", self._del_field, "danger")):
+            btn = QPushButton(text)
+            if oid:
+                btn.setObjectName(oid)
             btn.clicked.connect(slot)
             btns.addWidget(btn)
         layout.addLayout(btns)
         return page
+
+    def _export_fields(self) -> None:
+        """导出字段映射到 Excel（改完可直接导入回来）。"""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出字段映射", "字段映射.xlsx", "Excel 文件 (*.xlsx)")
+        if not path:
+            return
+        try:
+            excel_io.export_fields(Path(path), self.db.list_fields())
+            QMessageBox.information(self, "完成", f"已导出到：\n{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
+
+    def _import_fields(self) -> None:
+        """从 Excel 导入字段映射（按字段标识匹配，已存在则更新）。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择字段映射文件", "", "Excel 文件 (*.xlsx)")
+        if not path:
+            return
+        try:
+            added, updated, errors = excel_io.import_fields(Path(path), self.db)
+        except Exception as exc:
+            QMessageBox.critical(self, "导入失败", str(exc))
+            return
+        self._reload_fields()
+        self.settings_saved.emit()      # 列结构变了，刷新各页
+        msg = f"导入完成：新增 {added} 个，更新 {updated} 个"
+        if errors:
+            msg += f"\n\n{len(errors)} 条未处理：\n" + "\n".join(errors[:8])
+        QMessageBox.information(self, "完成", msg)
+
+    def _reset_fields(self) -> None:
+        """恢复字段映射到出厂设置（会删除自定义字段，操作前自动备份）。
+
+        ★ 二次确认 + 先备份：自定义字段删掉后，产品数据里对应的值还在，
+          但界面不再显示该列，属于不可逆的界面变更。
+        """
+        custom = [f for f in self.db.list_fields() if not f.get("builtin")]
+        tip = ((f"将删除 {len(custom)} 个自定义字段，"
+                "并把内置字段的显示名与数据源名恢复默认。") if custom else
+               "将把内置字段的显示名与数据源名恢复默认。")
+        confirm = QMessageBox.question(
+            self, "恢复默认",
+            tip + "\n\n恢复前会自动备份一次数据。\n确定继续吗？")
+        if confirm != QMessageBox.Yes:
+            return
+        try:
+            dest = backup_mod.backup_dir(self.db.get_setting("backup_dir") or "")
+            backup_mod.do_backup(dest, int(self.db.get_setting("backup_keep") or 3))
+        except Exception as exc:
+            QMessageBox.warning(self, "提示", f"自动备份失败（已中止恢复）：{exc}")
+            return
+        try:
+            self.db.reset_fields_to_default()
+        except Exception as exc:
+            QMessageBox.critical(self, "恢复失败", str(exc))
+            return
+        self._reload_fields()
+        self._reload_columns()
+        self.settings_saved.emit()
+        QMessageBox.information(self, "完成", "字段映射已恢复默认")
 
     def _reload_fields(self) -> None:
         fields = self.db.list_fields()
@@ -810,8 +884,16 @@ class SettingsPage(QWidget):
 
     # ---------------- 列表设置 ----------------
 
+    #: 列表设置里四栏的固定顺序（按用户要求：打印页待选 / 打印记录 / 产品管理 / 产品新增）
+    LIST_ORDER = ("print_product_columns", "record_columns",
+                  "product_columns", "product_form_order")
+
     def _build_record_columns_tab(self) -> QWidget:
-        """列表设置：统一管理程序里所有列表的列顺序与显示。"""
+        """列表设置：四个列表**并排同屏**显示，不用下拉切换。
+
+        ★ 原来一次只能看一个列表（下拉选择），改一个就得切来切去；
+          现在四栏并排，一眼看全，每栏独立勾选与上下移。
+        """
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 10, 4, 6)
@@ -820,37 +902,22 @@ class SettingsPage(QWidget):
         head = QHBoxLayout()
         head.addWidget(self._tab_title("列表设置"))
         head.addStretch(1)
-        head.addWidget(QLabel("选择要设置的列表"))
-        self.list_selector = QComboBox()
-        for key, title, _desc in listconfig.LIST_DEFS:
-            self.list_selector.addItem(title, key)
-        self.list_selector.setMinimumWidth(180)
-        self.list_selector.currentIndexChanged.connect(
-            lambda *_: self._reload_columns())
-        head.addWidget(self.list_selector)
+        tip = QLabel("勾选要显示的列；选中一行用下方的「上移 / 下移」调顺序")
+        tip.setObjectName("sectionTitle")
+        head.addWidget(tip)
         layout.addLayout(head)
 
-        self.list_tip = QLabel("")
-        self.list_tip.setObjectName("sectionTitle")
-        self.list_tip.setWordWrap(True)
-        layout.addWidget(self.list_tip)
-
-        self.columns_list = QListWidget()
-        # 双击直接切换勾选，操作更快
-        self.columns_list.itemDoubleClicked.connect(
-            lambda item: item.setCheckState(
-                Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked))
-        layout.addWidget(self.columns_list, 1)
+        # ---- 四栏并排 ----
+        cols_row = QHBoxLayout()
+        cols_row.setSpacing(12)
+        self._column_lists: Dict[str, QListWidget] = {}
+        for key in self.LIST_ORDER:
+            cols_row.addWidget(self._build_column_panel(key), 1)
+        layout.addLayout(cols_row, 1)
 
         btns = QHBoxLayout()
         btns.addStretch(1)
-        up_btn = QPushButton("上移")
-        up_btn.clicked.connect(lambda: self._move_column(-1))
-        btns.addWidget(up_btn)
-        down_btn = QPushButton("下移")
-        down_btn.clicked.connect(lambda: self._move_column(1))
-        btns.addWidget(down_btn)
-        default_btn = QPushButton("恢复默认")
+        default_btn = QPushButton("全部恢复默认")
         default_btn.clicked.connect(self._reset_columns)
         btns.addWidget(default_btn)
         save_btn = QPushButton("保存列表设置")
@@ -858,144 +925,234 @@ class SettingsPage(QWidget):
         save_btn.clicked.connect(self._save_record_columns)
         btns.addWidget(save_btn)
         layout.addLayout(btns)
+
+        # 四栏建好立刻填充一次：打开页面就能看到内容，不用等 reload
+        self._reload_columns()
         return page
 
-    def _current_list_key(self) -> str:
-        return self.list_selector.currentData() or listconfig.LIST_DEFS[0][0]
+    def _build_column_panel(self, key: str) -> QWidget:
+        """单栏：标题 + 说明 + 勾选列表 + 上移/下移。"""
+        panel = QFrame()
+        panel.setObjectName("whiteCard")
+        box = QVBoxLayout(panel)
+        box.setContentsMargins(12, 10, 12, 10)
+        box.setSpacing(6)
+
+        title = QLabel(listconfig.LIST_TITLES.get(key, key))
+        title.setStyleSheet("font-weight:bold;font-size:13px;")
+        box.addWidget(title)
+
+        desc = next((d for k, _t, d in listconfig.LIST_DEFS if k == key), "")
+        if key == "product_columns":
+            desc += "（ID 列用于定位产品，始终显示）"
+        desc_label = QLabel(desc)
+        desc_label.setObjectName("recordHint")
+        desc_label.setWordWrap(True)
+        desc_label.setMinimumHeight(32)      # 四栏标题下的说明高度对齐
+        box.addWidget(desc_label)
+
+        lst = QListWidget()
+        # 双击直接切换勾选，操作更快
+        lst.itemDoubleClicked.connect(
+            lambda item: item.setCheckState(
+                Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked))
+        box.addWidget(lst, 1)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        up_btn = QPushButton("上移")
+        up_btn.clicked.connect(lambda _c=False, k=key: self._move_column(k, -1))
+        row.addWidget(up_btn)
+        down_btn = QPushButton("下移")
+        down_btn.clicked.connect(lambda _c=False, k=key: self._move_column(k, 1))
+        row.addWidget(down_btn)
+        box.addLayout(row)
+
+        self._column_lists[key] = lst
+        return panel
 
     def _reload_columns(self) -> None:
-        key = self._current_list_key()
-        desc = next((d for k, _t, d in listconfig.LIST_DEFS if k == key), "")
-        suffix = "（ID 列用于定位产品，始终显示）" if key == "product_columns" else ""
-        self.list_tip.setText(desc + suffix)
-        cols = listconfig.load(self.db, key)
-        self.columns_list.clear()
-        for c in cols:
-            item = QListWidgetItem(c["label"])
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if c.get("visible", True) else Qt.Unchecked)
-            item.setData(Qt.UserRole, c["id"])
-            self.columns_list.addItem(item)
+        """刷新四栏的列清单（保留每栏当前的勾选与顺序由配置决定）。"""
+        for key, lst in self._column_lists.items():
+            cols = listconfig.load(self.db, key)
+            lst.clear()
+            for c in cols:
+                item = QListWidgetItem(c["label"])
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(
+                    Qt.Checked if c.get("visible", True) else Qt.Unchecked)
+                item.setData(Qt.UserRole, c["id"])
+                lst.addItem(item)
 
-    def _move_column(self, delta: int) -> None:
-        row = self.columns_list.currentRow()
-        target = row + delta
-        if row < 0 or target < 0 or target >= self.columns_list.count():
+    def _move_column(self, key: str, delta: int) -> None:
+        """把某一栏里选中的列上移 / 下移一行。"""
+        lst = self._column_lists.get(key)
+        if lst is None:
             return
-        item = self.columns_list.takeItem(row)
-        self.columns_list.insertItem(target, item)
-        self.columns_list.setCurrentRow(target)
+        row = lst.currentRow()
+        target = row + delta
+        if row < 0 or target < 0 or target >= lst.count():
+            return
+        item = lst.takeItem(row)
+        lst.insertItem(target, item)
+        lst.setCurrentRow(target)
 
     def _reset_columns(self) -> None:
-        key = self._current_list_key()
-        listconfig.reset(self.db, key)
+        """四个列表一起恢复默认。"""
+        confirm = QMessageBox.question(
+            self, "恢复默认",
+            "将四个列表的列显示与顺序都恢复成默认设置。\n确定继续吗？")
+        if confirm != QMessageBox.Yes:
+            return
+        for key in self.LIST_ORDER:
+            listconfig.reset(self.db, key)
         self._reload_columns()
         self.settings_saved.emit()
 
     def _save_record_columns(self) -> None:
-        key = self._current_list_key()
-        cols = []
-        for i in range(self.columns_list.count()):
-            item = self.columns_list.item(i)
-            cols.append({
-                "id": item.data(Qt.UserRole),
-                "label": item.text(),
-                "visible": item.checkState() == Qt.Checked,
-            })
-        listconfig.save(self.db, key, cols)
-        title = listconfig.LIST_TITLES.get(key, key)
-        QMessageBox.information(self, "完成", f"「{title}」的列表设置已保存")
+        """保存四个列表的列配置（一次全存）。"""
+        saved = []
+        for key, lst in self._column_lists.items():
+            cols = []
+            for i in range(lst.count()):
+                item = lst.item(i)
+                cols.append({
+                    "id": item.data(Qt.UserRole),
+                    "label": item.text(),
+                    "visible": item.checkState() == Qt.Checked,
+                })
+            listconfig.save(self.db, key, cols)
+            saved.append(listconfig.LIST_TITLES.get(key, key))
+        QMessageBox.information(
+            self, "完成", "已保存：" + "、".join(saved) + " 的列表设置")
         self._reload_columns()
         self.settings_saved.emit()
 
     # ---------------- 系统设置 ----------------
 
-    def _group_title(self, text: str) -> QWidget:
-        """系统设置左列的分区标题（标题 + 一条细分隔线），用于划分功能区域。"""
-        box = QWidget()
-        lay = QVBoxLayout(box)
-        lay.setContentsMargins(0, 8, 0, 0)
-        lay.setSpacing(5)
-        line = QFrame()
-        line.setFixedHeight(1)
-        line.setStyleSheet("background:#E5E8EC;border:none;")
-        lay.addWidget(line)
-        label = QLabel(text)
-        label.setStyleSheet(
-            "color:#1F4E79;font-weight:bold;font-size:13px;"
-            "padding-top:2px;")
-        lay.addWidget(label)
-        return box
+    def _form(self) -> QFormLayout:
+        """建一个「标签在左、输入框在右」的表单布局。
+
+        ★ 为什么：原来每项都是「标签一行 + 控件一行」，占两行高；
+          改成左右排布后一项只要一行，整页高度几乎减半，
+          小窗口下也不用滚动就能看全。
+        """
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(8)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        return form
+
+    def min_content_height(self) -> int:
+        """系统设置页内容所需的最小高度（不含窗口标题栏）。
+
+        ★ 为什么需要：主窗口的最小高度原本只按「打印页」算，
+          而设置页是**五张卡片分两列**，比打印页更高，
+          窗口被缩到打印页的最小高度时，设置页下半截就会被裁掉。
+          这里把左列最高的那一摞卡片高度报出去，供主窗口取最大值。
+
+        Returns:
+            内容最小高度（像素）
+        """
+        if not hasattr(self, "_left_col"):
+            return 0
+        total = self.layout().contentsMargins().top() + \
+            self.layout().contentsMargins().bottom()
+        # 左列：所有卡片 + 卡片间距 + 底部按钮行
+        for i in range(self._left_col.count()):
+            item = self._left_col.itemAt(i)
+            widget = item.widget()
+            if widget is not None:
+                total += widget.minimumSizeHint().height()
+            elif item.spacerItem() is None:
+                total += item.layout().minimumSize().height()
+        total += self._left_col.spacing() * max(0, self._left_col.count() - 1)
+        # 底部按钮行（保存 / 恢复默认）
+        if hasattr(self, "_bottom_layout"):
+            total += self._bottom_layout.minimumSize().height()
+        return total
 
     def _build_system_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
+        outer.setContentsMargins(4, 8, 4, 4)
+        outer.setSpacing(8)
+
         root = QHBoxLayout()
+        root.setSpacing(14)
         outer.addLayout(root, 1)
-        root.setSpacing(16)
 
         # 左列：打印设置（QFrame 才能正确应用 whiteCard 背景样式）
         left_card = QFrame()
         left_card.setObjectName("whiteCard")
         left = QVBoxLayout(left_card)
-        left.setContentsMargins(16, 14, 16, 14)
-        left.setSpacing(8)
+        left.setContentsMargins(16, 12, 16, 12)
+        left.setSpacing(6)          # 收紧密一点，垂直空间够用
         title = QLabel("打印设置")
         title.setStyleSheet("font-weight:bold;font-size:15px;")
         left.addWidget(title)
 
-        self.printer_label = QLabel("默认打印机")
-        left.addWidget(self.printer_label)
+        # ★ 标签放输入框左侧（表单式）：原来「标签占一行 + 控件占一行」，
+        #   一项要两行高；改成左右排布后一行搞定，整页高度直接减半
+        form = self._form()
         printer_row = QHBoxLayout()
+        printer_row.setContentsMargins(0, 0, 0, 0)
         self.printer_combo = QComboBox()
         self.printer_combo.setEditable(True)
         printer_row.addWidget(self.printer_combo, 1)
         refresh_btn = QPushButton("刷新")
         refresh_btn.clicked.connect(self._refresh_printers)
         printer_row.addWidget(refresh_btn)
-        left.addLayout(printer_row)
+        form.addRow("默认打印机", printer_row)
 
-        # ===== 分区二：模板 =====
-        left.addWidget(self._group_title("模板"))
-
-        left.addWidget(QLabel("模板文件夹"))
         tpl_row = QHBoxLayout()
+        tpl_row.setContentsMargins(0, 0, 0, 0)
         self.template_dir_edit = QLineEdit()
-        self.template_dir_edit.setPlaceholderText(
-            "留空使用程序目录 data/templates")
+        self.template_dir_edit.setPlaceholderText("留空 = data/templates")
         tpl_row.addWidget(self.template_dir_edit, 1)
         tpl_btn = QPushButton("浏览…")
         tpl_btn.clicked.connect(self._browse_template_dir)
         tpl_row.addWidget(tpl_btn)
         tpl_open = QPushButton("打开")
-        tpl_open.setToolTip("在资源管理器中打开该文件夹")
+        tpl_open.setToolTip("在资源管理器中打开模板文件夹")
         tpl_open.clicked.connect(self._open_template_dir)
         tpl_row.addWidget(tpl_open)
-        left.addLayout(tpl_row)
+        form.addRow("模板文件夹", tpl_row)
+        left.addLayout(form)
+        self._left_col = QVBoxLayout()
+        left_col = self._left_col
+        left_col.setSpacing(12)
+        left_col.addWidget(left_card)
 
-        # ===== 分区三：打印记录导出 =====
-        # 在这里定好，记录页点「导出」就直接按它导出，不再弹窗询问
-        left.addWidget(self._group_title("打印记录导出"))
+        # ===== 卡片二：打印记录导出 =====
+        # 在这里定好，记录页点「导出」就直接按这里的方式导出，不再弹窗询问
+        export_card = QFrame()
+        export_card.setObjectName("whiteCard")
+        left = QVBoxLayout(export_card)
+        left.setContentsMargins(16, 12, 16, 12)
+        left.setSpacing(6)
+        etitle = QLabel("打印记录导出")
+        etitle.setStyleSheet("font-weight:bold;font-size:15px;")
+        left.addWidget(etitle)
 
-        left.addWidget(QLabel("导出方式"))
+        eform = self._form()
         self.export_mode_combo = QComboBox()
         self.export_mode_combo.addItem("全部数据放在一个工作表里", "single")
         self.export_mode_combo.addItem("按打印日期分别存到对应的工作表", "date")
         self.export_mode_combo.setToolTip(
             "选好后，在「打印记录」页点导出会直接按这里的方式导出，不再弹窗询问")
-        left.addWidget(self.export_mode_combo)
+        eform.addRow("导出方式", self.export_mode_combo)
 
-        left.addWidget(QLabel("工作表名称格式（按日期分表时用）"))
         self.sheet_fmt_edit = QLineEdit()
         self.sheet_fmt_edit.setPlaceholderText("留空为 yy.MM.dd，示例 26.10.19")
         self.sheet_fmt_edit.setToolTip(
             "占位符：yyyy=四位年  yy=两位年  MM=月  dd=日\n"
             "例：yy.MM.dd -> 26.10.19；yyyy-MM-dd -> 2026-10-19")
-        left.addWidget(self.sheet_fmt_edit)
+        eform.addRow("工作表名称格式", self.sheet_fmt_edit)
         self.export_mode_combo.currentIndexChanged.connect(
             self._sync_export_mode)
 
-        left.addWidget(QLabel("打印记录页默认显示周期"))
         self.record_range_combo = QComboBox()
         for text, key in (("今天", "1d"), ("近一周", "7d"),
                           ("近一月", "30d"), ("近三月", "90d"),
@@ -1004,39 +1161,50 @@ class SettingsPage(QWidget):
         self.record_range_combo.setToolTip(
             "打开「打印记录」页时，日期范围默认按这里初始化；"
             "页面上仍可随时手动改")
-        left.addWidget(self.record_range_combo)
+        eform.addRow("默认显示周期", self.record_range_combo)
+        left.addLayout(eform)
 
-        # ===== 分区四：其他 =====
-        left.addWidget(self._group_title("其他"))
+        # 模板注意事项：原来一长段挤在最底部，窗口一矮就被切掉；
+        # 这里缩短成一行，详细说明放 tooltip
+        tpl_note = QLabel("模板中的命名数据源须与「字段映射」同名")
+        tpl_note.setObjectName("recordHint")
+        tpl_note.setToolTip(
+            "模板（.btw）里的数据源必须命名为「命名字符串」，"
+            "名称与「字段映射」一致。\n"
+            "打印时程序只在内存中赋值，不会保存对模板的任何修改。")
+        left.addWidget(tpl_note)
+        left_col.addWidget(export_card)
 
-        left.addWidget(QLabel("工厂代码（用于 {FACTORY} 占位符）"))
+        # ===== 卡片三：其他设置 =====
+        other_card = QFrame()
+        other_card.setObjectName("whiteCard")
+        other = QVBoxLayout(other_card)
+        other.setContentsMargins(16, 12, 16, 12)
+        other.setSpacing(6)
+        otitle = QLabel("其他设置")
+        otitle.setStyleSheet("font-weight:bold;font-size:15px;")
+        other.addWidget(otitle)
+
+        oform = self._form()
         self.factory_edit = QLineEdit()
-        left.addWidget(self.factory_edit)
+        oform.addRow("工厂代码", self.factory_edit)
 
-        left.addWidget(QLabel("删除打印记录所需密码"))
         self.password_edit = QLineEdit()
         self.password_edit.setEchoMode(QLineEdit.Password)
-        left.addWidget(self.password_edit)
+        oform.addRow("删除记录密码", self.password_edit)
+        other.addLayout(oform)
 
-        self.mock_check = QCheckBox("模拟打印模式（未安装 BarTender 时调试用，"
-                                    "打印内容写入 data/print_log.txt）")
-        left.addWidget(self.mock_check)
-
-        note = QLabel("提示：模板（.btw）中的数据源必须是「命名字符串」，"
-                      "名称与「字段映射」一致；打印时程序只在内存中赋值，"
-                      "不会保存对模板的任何修改。")
-        note.setObjectName("sectionTitle")
-        note.setWordWrap(True)
-        left.addWidget(note)
-        left.addStretch(1)
-
-        left_col = QVBoxLayout()
-        left_col.setSpacing(16)
-        left_col.addWidget(left_card)
+        self.mock_check = QCheckBox("模拟打印模式（不调用 BarTender，"
+                                    "打印内容写入日志）")
+        self.mock_check.setToolTip(
+            "未安装 BarTender 时用它调试界面流程；\n"
+            "打印内容会写入 data/print_log.txt，不会真的打印。")
+        other.addWidget(self.mock_check)
+        left_col.addWidget(other_card)
         left_col.addStretch(1)
-        root.addLayout(left_col, 3)
+        root.addLayout(left_col, 1)
 
-        # 右列：数据备份 + 更新设置
+        # 右列：其他设置 + 数据备份 + 更新设置
         right = QVBoxLayout()
         right.setSpacing(16)
 
@@ -1064,12 +1232,12 @@ class SettingsPage(QWidget):
         auto_row.addStretch(1)
         backup.addLayout(auto_row)
 
-        # 说明文字放进输入框里（placeholder），省一行、界面更清爽
-        backup.addWidget(QLabel("备份目录"))
+        # 标签在左、输入框在右；说明文字放进 placeholder，省一行
+        bform = self._form()
         bdir_row = QHBoxLayout()
+        bdir_row.setContentsMargins(0, 0, 0, 0)
         self.backup_dir_edit = QLineEdit()
-        self.backup_dir_edit.setPlaceholderText(
-            "留空使用程序目录 data/backup")
+        self.backup_dir_edit.setPlaceholderText("留空 = data/backup")
         bdir_row.addWidget(self.backup_dir_edit, 1)
         bdir_btn = QPushButton("浏览…")
         bdir_btn.clicked.connect(self._browse_backup_dir)
@@ -1078,7 +1246,8 @@ class SettingsPage(QWidget):
         bdir_open.setToolTip("在资源管理器中打开备份文件夹")
         bdir_open.clicked.connect(self._open_backup_dir)
         bdir_row.addWidget(bdir_open)
-        backup.addLayout(bdir_row)
+        bform.addRow("备份目录", bdir_row)
+        backup.addLayout(bform)
 
         bbtn_row = QHBoxLayout()
         now_btn = QPushButton("立即备份")
@@ -1111,15 +1280,18 @@ class SettingsPage(QWidget):
 
         self.auto_update_check = QCheckBox("启动时自动检查更新（可随时关闭，不影响离线使用）")
         update.addWidget(self.auto_update_check)
-        update.addWidget(QLabel("仓库地址（owner/repo 或完整 GitHub 地址，可留空）"))
+        uform = self._form()
         repo_row = QHBoxLayout()
+        repo_row.setContentsMargins(0, 0, 0, 0)
         self.repo_edit = QLineEdit()
-        self.repo_edit.setPlaceholderText("如 ylqcxwl/box-label-printer")
+        self.repo_edit.setPlaceholderText("如 owner/repo，可留空")
+        self.repo_edit.setToolTip("填 owner/repo 或完整 GitHub 地址，留空则不检查更新")
         repo_row.addWidget(self.repo_edit, 1)
         check_btn = QPushButton("检查更新")
         check_btn.clicked.connect(self._check_update_now)
         repo_row.addWidget(check_btn)
-        update.addLayout(repo_row)
+        uform.addRow("仓库地址", repo_row)
+        update.addLayout(uform)
 
         # ★ 令牌不常驻界面：只有连不上仓库（如私有仓库）时才弹窗索要一次，
         #   平时不显示这个输入框，界面更干净、也避免误改
@@ -1139,10 +1311,12 @@ class SettingsPage(QWidget):
         update.addWidget(self.download_btn)
         right.addWidget(update_card)
         right.addStretch(1)
-        root.addLayout(right, 2)
+        root.addLayout(right, 1)
 
-        # 底部按钮（直接挂在 page 的布局下，避免中间容器被 GC 回收导致控件失效）
-        bottom = QHBoxLayout()
+        # 底部按钮固定在页面底部，不随内容滚动（永远看得到）
+        self._bottom_layout = QHBoxLayout()
+        bottom = self._bottom_layout
+        bottom.setContentsMargins(4, 8, 14, 6)
         bottom.addStretch(1)
         save_btn = QPushButton("保存系统设置")
         save_btn.setObjectName("primary")

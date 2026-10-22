@@ -4,6 +4,7 @@
 logo 优先使用 assets/logo.png 或用户自定义 logo，绘制版仅作兜底。
 """
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -148,13 +149,14 @@ def arrow_dir() -> Path:
     for candidate in (ASSETS_WRITE_DIR, DATA_DIR / "assets"):
         try:
             candidate.mkdir(parents=True, exist_ok=True)
-            probe = candidate / ".write_probe"
-            probe.write_bytes(b"")
-            probe.unlink(missing_ok=True)
-            _WRITABLE_ASSETS = candidate
-            return candidate
         except OSError:
             continue
+        # ★ 用 os.access 判断可写，不再「写一个探针文件再删掉」：
+        #   某些环境（如沙箱 / 杀软）会拦截删除，导致误判成不可写，
+        #   进而把生成的箭头图标错误地丢到 data/assets 里。
+        if os.access(str(candidate), os.W_OK):
+            _WRITABLE_ASSETS = candidate
+            return candidate
     _WRITABLE_ASSETS = ASSETS_WRITE_DIR
     return _WRITABLE_ASSETS
 

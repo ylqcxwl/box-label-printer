@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Tuple
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
+from app.core.db import KIND_PRINT, KIND_PRODUCT
+
 HEADER_FONT = Font(bold=True, color="FFFFFF")
 HEADER_FILL = PatternFill("solid", fgColor="0066CC")
 
