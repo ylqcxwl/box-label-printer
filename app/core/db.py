@@ -423,6 +423,31 @@ class DB:
         self.execute("UPDATE fields SET label=?, datasource=? WHERE id=?",
                      (label, datasource, fid))
 
+    def reset_fields_to_default(self) -> None:
+        """把字段映射恢复成出厂设置。
+
+        ★ 两步：删掉全部自定义字段 + 内置字段还原成 BUILTIN_FIELDS 的定义。
+          自定义字段被删后，产品数据里对应的值还在（存在 data JSON 里），
+          但界面上不会再显示该列——所以界面调用前必须二次确认并先备份。
+        """
+        with self._lock:
+            try:
+                self._conn.execute("DELETE FROM fields WHERE COALESCE(builtin,0)=0")
+                for i, (fkey, label, ds, kind) in enumerate(BUILTIN_FIELDS):
+                    self._conn.execute(
+                        "UPDATE fields SET label=?, datasource=?, sort=?, kind=? "
+                        "WHERE fkey=?", (label, ds, i, kind, fkey))
+                    # 老库可能缺这个内置字段（_upgrade_fields 才会补），这里一并补上
+                    if self._conn.total_changes == 0 or not self.field_by_key(fkey):
+                        self._conn.execute(
+                            "INSERT INTO fields(fkey,label,datasource,builtin,"
+                            "sort,kind) VALUES(?,?,?,1,?,?)",
+                            (fkey, label, ds, i, kind))
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def delete_field(self, fid: int) -> None:
         row = self.query("SELECT builtin FROM fields WHERE id=?", (fid,))
         if row and row[0]["builtin"]:

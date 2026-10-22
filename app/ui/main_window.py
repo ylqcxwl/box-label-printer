@@ -48,6 +48,7 @@ from app.core.db import DB
 from app.ui import icons
 from app.ui.page_print import PrintPage
 from app.ui.page_products import ProductsPage
+from app.ui.title_button import TitleButton
 from app.ui.page_records import RecordsPage
 from app.ui.page_settings import SettingsPage
 from app.version import AUTHOR, VERSION
@@ -84,19 +85,17 @@ class TitleBar(QFrame):
         layout.addWidget(self.title)
         layout.addStretch(1)
 
-        for text, slot, oid in (("—", window.showMinimized, "winBtn"),
-                                ("▢", window.toggle_maximize, "winBtn"),
-                                ("✕", window.close, "winClose")):
-            btn = QPushButton(text)
-            btn.setObjectName(f"winBtn {oid}" if oid == "winClose" else "winBtn")
-            if oid == "winClose":
-                btn.setObjectName("winClose")
-                btn.setStyleSheet(
-                    "QPushButton{background:transparent;border:none;font-size:15px;"
-                    "padding:4px 14px;color:#1F2329;}"
-                    "QPushButton:hover{background:#E81123;color:#FFFFFF;}")
-            btn.clicked.connect(slot)
-            layout.addWidget(btn)
+        # ★ 三个窗口按钮的图标都由 Qt 现画：
+        #   原来用「— ▢ ✕」这些特殊符号，Win7 上缺字形会显示成空白或方框
+        self.min_btn = TitleButton(TitleButton.MIN)
+        self.min_btn.clicked.connect(window.showMinimized)
+        layout.addWidget(self.min_btn)
+        self.max_btn = TitleButton(TitleButton.MAX)
+        self.max_btn.clicked.connect(window.toggle_maximize)
+        layout.addWidget(self.max_btn)
+        self.close_btn = TitleButton(TitleButton.CLOSE, danger=True)
+        self.close_btn.clicked.connect(window.close)
+        layout.addWidget(self.close_btn)
 
     def set_title(self, text: str) -> None:
         self.title.setText(text)
@@ -382,8 +381,11 @@ class MainWindow(QMainWindow):
         # 最小高度取「打印页内容实算」与「布局最小需求」的较大值：
         # 只用布局的 minimumSizeHint 会偏小（QLabel 的 minimumSizeHint 远小于内容），
         # 窗口压过头时各区域就会互相重叠。
+        # ★ 取所有页面的最大值：设置页是两列五张卡片，比打印页更高，
+        #   只按打印页算的话，切到设置页时下半截会被裁掉
         page_min = max(self.print_page.min_content_height(),
-                       self.print_page.layout().minimumSize().height())
+                       self.print_page.layout().minimumSize().height(),
+                       self.settings_page.min_content_height())
         self.setMinimumHeight(page_min + self.titlebar.sizeHint().height() + 10
                               + self._shadow_inset() * 2)
 
