@@ -713,7 +713,10 @@ class MainWindow(QMainWindow):
         # 列表设置 / 字段映射可能变了，刷新各页的列结构
         self.print_page.reload()
         self.products_page.reload()
-        self.records_page.reload()
+        # ★ 记录页要用 on_settings_saved 而不是 reload：
+        #   改了「默认显示周期」后需要重新初始化日期范围，
+        #   否则看起来只有重启程序才生效。
+        self.records_page.on_settings_saved()
 
     # ---------------- 自动备份 ----------------
 

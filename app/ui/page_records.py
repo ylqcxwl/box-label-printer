@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (QApplication, QDateEdit, QFileDialog, QFrame,
 
 from app.core import excel_io, listconfig
 from app.core.excel_io import cell_text
+from app.core.print_data import build_label_data
 from app.core.bartender import (BarTender, resolve_printer,
                                template_path as template_path_abs)
 from app.core.db import DB, KIND_PRINT
@@ -257,6 +258,39 @@ class RecordsPage(QWidget):
             self.date_from.setDate(today.addDays(-self.RANGE_OFFSETS.get(key, 29)))
         self.date_to.setDate(today)
 
+    def _fit_columns(self, sample: int = 300) -> None:
+        """按内容自适应列宽（勾选列固定 44）。
+
+        ★ 行数多时只采样前 sample 行：
+          Qt 自带的 ResizeToContents 会逐行扫描，几万行时算列宽就要好几秒；
+          采样计算的结果几乎一样，但快得多，刷新不卡。
+        """
+        fm = self.table.fontMetrics()
+        rows = min(self.table.rowCount(), sample)
+        for c in range(1, self.table.columnCount()):
+            head = self.table.horizontalHeaderItem(c)
+            widest = fm.width(head.text() if head else "") + 34
+            for r in range(rows):
+                item = self.table.item(r, c)
+                if item is not None:
+                    widest = max(widest, fm.width(item.text()) + 34)
+            self.table.setColumnWidth(c, min(300, max(76, widest)))
+        self.table.setColumnWidth(0, 44)
+
+    def on_settings_saved(self) -> None:
+        """系统设置保存后调用：按「默认显示周期」重新初始化日期范围并刷新。
+
+        ★ 为什么需要这个入口：
+          默认周期只在页面构造时应用过一次，改完设置后
+          只 reload 不会重算日期范围，看起来就像「要重启才生效」。
+        """
+        self.date_from.blockSignals(True)
+        self.date_to.blockSignals(True)
+        self._apply_default_range()
+        self.date_from.blockSignals(False)
+        self.date_to.blockSignals(False)
+        self.reload()
+
     def _reset_filter(self) -> None:
         """重置筛选条件：清空 SN / 箱号，日期按设置的默认周期重新初始化。"""
         self._filter_timer.stop()
@@ -315,12 +349,8 @@ class RecordsPage(QWidget):
         finally:
             self._applying = False
             self.table.setUpdatesEnabled(True)
-        # 列宽只在「列结构变化」时算一次，之后固定：
-        # 否则每次查询结果变化整张表的列宽都会跳
-        freeze_widths(self.table, self._width_cache,
-                      signature=tuple(label for _, label in columns),
-                      min_width=76, max_width=300,
-                      overrides={0: 44})
+        # 按当前内容自适应列宽（用户仍可手动拖动列宽）
+        self._fit_columns()
         self.count_label.setText(f"共 {len(self._rows)} 条")
 
     # ================= 行选中着色 =================
@@ -479,18 +509,13 @@ class RecordsPage(QWidget):
         template_dir = resolve_template_dir(self.db.get_setting("template_dir"))
         template_path = template_path_abs(template_dir, template_name)
 
-        total = int(snapshot.get("shuliang", 0) or len(records))
-        data: Dict[str, str] = {}
-        for f in self.db.list_fields():
-            if int(f.get("kind", 0) or 0) == KIND_PRINT:
-                continue
-            data[f["datasource"]] = str(snapshot.get(f["fkey"], ""))
-        # 箱号按「字段映射」里配置的数据源名写入（默认 xianghao）
-        for f in self.db.list_print_fields():
-            if f["fkey"] == "xianghao":
-                data[f["datasource"]] = box_no
-        for i in range(total):
-            data[str(i + 1)] = records[i]["sn"] if i < len(records) else ""
+        # ★ 与打印页共用同一套组装逻辑，避免两处走偏导致重打印时
+        #   BarTender 拿不到值、只能显示模板自带的默认值。
+        #   SN 位数按箱内**实际记录数**（不是快照里的装箱数量），
+        #   这样不满箱的箱子重打时不会在末尾留一串空位。
+        sns = [str(r["sn"]) for r in records]
+        data = build_label_data(self.db, snapshot, box_no, sns,
+                                total=len(sns))
 
         self._worker = ReprintWorker(
             self.bartender, template_path, data,

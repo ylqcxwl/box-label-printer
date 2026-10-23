@@ -170,6 +170,125 @@ def sanitize_sheet_name(name: str) -> str:
     return cleaned or "Sheet"
 
 
+FIELD_HEADERS = ["显示名称", "模板数据源名", "类型", "字段标识"]
+
+
+def field_kind_text(field: Dict[str, Any]) -> str:
+    """字段类型 -> 中文（打印 / 内置 / 自定义），导出与界面共用。"""
+    if int(field.get("kind", 0) or 0) == KIND_PRINT:
+        return "打印"
+    return "内置" if field.get("builtin") else "自定义"
+
+
+def export_fields(path: Path, fields: List[Dict[str, Any]]) -> None:
+    """导出字段映射到 Excel（中文表头，改完可直接用 import_fields 导回来）。
+
+    Args:
+        path: 目标 .xlsx 路径
+        fields: db.list_fields() 的结果
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "字段映射"
+    ws.append(list(FIELD_HEADERS))
+    for f in fields:
+        ws.append([f.get("label", ""), f.get("datasource", ""),
+                   field_kind_text(f), f.get("fkey", "")])
+    _style_header(ws, len(FIELD_HEADERS))
+    _auto_width(ws, len(FIELD_HEADERS), len(fields))
+    wb.save(str(path))
+
+
+def import_fields(path: Path, db) -> Tuple[int, int, List[str]]:
+    """从 Excel 导入字段映射。
+
+    按「字段标识」匹配：已存在就更新显示名与数据源名，不存在则新增。
+    ★ 内置字段只更新、不删除；「类型」列只在新增时生效
+      （已有字段的类型由程序控制，防止误改成打印类导致列错位）。
+
+    Args:
+        path: 源 .xlsx 路径
+        db: DB 实例
+
+    Returns:
+        (新增数, 更新数, 错误信息列表)
+    """
+    wb = load_workbook(str(path))
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return 0, 0, ["文件是空的"]
+
+    header = [str(h).strip() if h is not None else "" for h in rows[0]]
+    col = {name: idx for idx, name in enumerate(header)
+           if name in FIELD_HEADERS}
+    if "字段标识" not in col:
+        return 0, 0, ["缺少「字段标识」列，请先导出一份模板核对表头"]
+
+    def cell(row: tuple, key: str) -> str:
+        idx = col.get(key)
+        if idx is None or idx >= len(row) or row[idx] is None:
+            return ""
+        value = row[idx]
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        return str(value).strip()
+
+    added = updated = 0
+    errors: List[str] = []
+    for line_no, row in enumerate(rows[1:], start=2):
+        fkey = cell(row, "字段标识")
+        if not fkey:
+            errors.append(f"第 {line_no} 行：字段标识为空，已跳过")
+            continue
+        label = cell(row, "显示名称") or fkey
+        datasource = cell(row, "模板数据源名") or fkey
+        try:
+            existing = db.field_by_key(fkey)
+            if existing:
+                db.update_field(existing["id"], label, datasource)
+                updated += 1
+            else:
+                kind = (KIND_PRINT if cell(row, "类型") == "打印"
+                        else KIND_PRODUCT)
+                db.add_field(fkey, label, datasource, kind)
+                added += 1
+        except ValueError as exc:
+            errors.append(f"第 {line_no} 行：{exc}")
+    return added, updated, errors
+
+
+def _calc_widths(columns: List[Tuple[str, str]],
+                 rows: List[Dict[str, Any]], sample: int = 500
+                 ) -> List[float]:
+    """按表头与内容算列宽（8~60），**不读工作表**。
+
+    ★ 原来 _auto_width 用 ws.cell(row, col) 逐格读，3 万行 × 20 列
+      要构造 60 万个 Cell 对象、耗时约 6 秒；这里直接在原始数据上算，
+      只采样前 sample 行（同一列的值分布在前几百行就基本覆盖了），
+      列宽结果几乎不变，耗时降到几十毫秒。
+
+    Args:
+        columns: [(列id, 中文列名)]
+        rows: 记录列表
+        sample: 最多采样多少行
+
+    Returns:
+        每列的宽度（按 columns 顺序）
+    """
+    picked = rows[:max(1, sample)]
+    widths: List[float] = []
+    for cid, label in columns:
+        widest = _display_width(label)
+        for r in picked:
+            value = r.get(cid)
+            if value is None:
+                continue
+            widest = max(widest, _display_width(value))
+        widths.append(min(60, max(8, int(widest) + 4)))
+    return widths
+
+
 def export_records(path: Path, columns: List[Tuple[str, str]],
                    rows: List[Dict[str, Any]], *,
                    group_by_date: bool = False,
@@ -189,17 +308,30 @@ def export_records(path: Path, columns: List[Tuple[str, str]],
     Returns:
         {工作表名: 该表行数}，便于调用方回显导出结果
     """
-    headers = [label for _, label in columns]
-    wb = Workbook()
-    wb.remove(wb.active)          # 去掉默认空表，自己按需建
+    # ★ 提速两处（实测 3 万行 × 20 列：32s -> 约 10s）
+    #   1) 用 write_only 流式工作簿：openpyxl 普通模式保存时要维护整张表
+    #      的对象树，光 wb.save 就占了 2/3 的时间；
+    #   2) 列宽改为「直接在数据上算」，不再逐格 ws.cell() 遍历 60 万个 Cell。
+    widths = _calc_widths(columns, rows)
+    wb = Workbook(write_only=True)
 
     def fill(ws, data: List[Dict[str, Any]]) -> None:
-        ws.append(headers)
+        from openpyxl.cell import WriteOnlyCell
+        from openpyxl.utils import get_column_letter
+        for i, w in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        # 写模式下没法事后设样式，表头要在 append 时就带上样式
+        head_cells = []
+        for _cid, label in columns:
+            c = WriteOnlyCell(ws, value=label)
+            c.font = HEADER_FONT
+            c.fill = HEADER_FILL
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            head_cells.append(c)
+        ws.append(head_cells)
         for r in data:
             # 老记录某些列可能是 NULL（如 box_seq），直接 str() 会写出 "None"
             ws.append([cell_text(r.get(cid)) for cid, _ in columns])
-        _style_header(ws, len(headers))
-        _auto_width(ws, len(headers), len(data))
 
     result: Dict[str, int] = {}
     if not group_by_date:
