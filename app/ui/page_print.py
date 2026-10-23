@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDateEdit, QFileDialog,
                              QSizePolicy, QTableWidget, QTableWidgetItem,
                              QVBoxLayout, QWidget)
 
+from app.core.print_data import build_label_data
 from app.core import listconfig
 from app.core import rules as rule_engine
 from app.core.bartender import (BarTender, PrintError, resolve_printer,
@@ -413,10 +414,11 @@ class PrintPage(QWidget):
         if old is not None and changed:
             self.db.clear_product_drafts(int(old["_id"]))
         self.current = self.db.get_product(pid)
-        # 需求：更换产品时生产日期复位为系统当天，
-        # 否则会沿用上一个产品选的日期，容易打错标签
+        # 需求：更换产品时生产日期复位为系统当天、批次也复位为默认，
+        # 否则会沿用上一个产品选的日期/批次，容易打错标签
         if changed:
             self.date_edit.setDate(QDate.currentDate())
+            self.batch_combo.setCurrentIndex(0)
         self._last_print_ok = False
         self._fill_detail()
         self._load_drafts()
@@ -726,24 +728,13 @@ class PrintPage(QWidget):
             prefix=str(self.current.get("sn4", "")))
 
         # 组装打印数据：产品字段数据源 + 箱号（按映射的数据源名）+ 编号 SN
-        data: Dict[str, str] = {}
-        for f in self.db.list_fields():
-            # 打印字段（箱号等）由程序自动填充，不从产品数据里取
-            if int(f.get("kind", 0) or 0) == KIND_PRINT:
-                continue
-            value = str(self.current.get(f["fkey"], ""))
-            # 手动打印不满箱时，装箱数量按实际数量
-            if f["fkey"] == "shuliang" and manual and len(sns) < total:
-                value = str(len(sns))
-            data[f["datasource"]] = value
-        # 箱号写进「字段映射」里配置的数据源名：
-        # 模板里叫什么名字就填什么（默认 xianghao），这样箱号才能打印出来
-        for f in self.db.list_print_fields():
-            if f["fkey"] == "xianghao":
-                data[f["datasource"]] = box_no
+        # ★ 与打印记录页的「重打印」共用 build_label_data，保证两者永远一致
+        current = dict(self.current)
+        # 手动打印不满箱时，装箱数量按实际数量
+        if manual and len(sns) < total:
+            current["shuliang"] = str(len(sns))
         pad_to = total if total else len(sns)
-        for i in range(pad_to):
-            data[str(i + 1)] = sns[i] if i < len(sns) else ""
+        data = build_label_data(self.db, current, box_no, sns, total=pad_to)
 
         self._pending = {
             "box_no": box_no, "seq": seq, "month": month, "batch": batch,
