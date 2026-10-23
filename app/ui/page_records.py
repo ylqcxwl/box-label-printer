@@ -494,11 +494,31 @@ class RecordsPage(QWidget):
 
         # ★ 与打印页共用同一套组装逻辑，避免两处走偏导致重打印时
         #   BarTender 拿不到值、只能显示模板自带的默认值。
-        #   ★ 不满箱时要按「装箱数量」把 SN 位填满（多出来的写空串）：
-        #     没传到的 SN 位会保留模板里的示例数据，直接被打印出来。
         sns = [str(r["sn"]) for r in records]
-        total = int(snapshot.get("shuliang", 0) or 0) or len(sns)
+        total = self._box_capacity(records[0], snapshot, len(sns))
         data = build_label_data(self.db, snapshot, box_no, sns, total=total)
+
+    def _box_capacity(self, record: Dict[str, Any], snapshot: Dict[str, Any],
+                      sn_count: int) -> int:
+        """重打印时该填几个 SN 位。
+
+        ★ 取「产品本身的装箱数量」，不能直接用记录快照里的 shuliang：
+          当初**不满箱打印**时，打印页会把快照里的 shuliang 改成实际打印数量
+          （如打了 3 个就存 "3"）；拿它当位数的话，模板上第 4 个以后的
+          SN 位就不会被赋值，于是打印出来的还是模板自带的示例数据。
+          产品被删时再依次回退到快照值、实际记录数。
+        """
+        pid = int(record.get("product_id") or 0)
+        product = self.db.get_product(pid) if pid else None
+        for value in ((product or {}).get("shuliang", ""),
+                      snapshot.get("shuliang", "")):
+            try:
+                num = int(str(value).strip() or 0)
+            except (TypeError, ValueError):
+                continue
+            if num > 0:
+                return num
+        return sn_count
 
         task_id = self.print_service.submit(
             template_path, data,
