@@ -48,6 +48,7 @@ from app.core.db import DB
 from app.ui import icons
 from app.ui.page_print import PrintPage
 from app.ui.page_products import ProductsPage
+from app.core.print_service import PrintService
 from app.ui.title_button import TitleButton
 from app.ui.page_records import RecordsPage
 from app.ui.page_settings import SettingsPage
@@ -363,8 +364,17 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.titlebar)
 
         self.stack = QStackedWidget()
-        self.print_page = PrintPage(db, self.bartender, self)
-        self.records_page = RecordsPage(db, self.bartender, self)
+        # ★ 全程序共用一个常驻打印线程：BarTender 的 COM 连接有线程亲和性，
+        #   每次打印新建线程会让连接跨线程复用而报错（时好时坏的根源）
+        self.print_service = PrintService(self.bartender, self)
+        self.print_page = PrintPage(db, self.bartender, self,
+                                    print_service=self.print_service)
+        self.print_service.done.connect(self.print_page._on_service_done)
+        self.print_service.failed.connect(self.print_page._on_service_failed)
+        self.records_page = RecordsPage(db, self.bartender, self,
+                                       print_service=self.print_service)
+        self.print_service.done.connect(self.records_page._on_reprint_done)
+        self.print_service.failed.connect(self.records_page._on_reprint_failed)
         self.products_page = ProductsPage(db, self)
         self.settings_page = SettingsPage(db, self)
         for page in (self.print_page, self.records_page,
@@ -658,6 +668,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         # 关闭前立刻写回尺寸（防抖定时器可能还没到点）
         self._write_window_geometry()
+        # ★ 先停打印线程再释放 BarTender：
+        #   反过来的话，线程里正在进行的打印会碰到已关闭的 COM 对象
+        if self.print_service.isRunning():
+            self.print_service.stop()
         self.bartender.quit()  # 退出时释放 BarTender，不留后台进程
         self.db.close()
         event.accept()
