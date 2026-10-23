@@ -1159,10 +1159,10 @@ class SettingsPage(QWidget):
         eform.addRow("导出方式", self.export_mode_combo)
 
         self.sheet_fmt_edit = QLineEdit()
-        self.sheet_fmt_edit.setPlaceholderText("留空为 yy.MM.dd，示例 26.10.19")
+        self.sheet_fmt_edit.setPlaceholderText("留空为 YY.MM.DD，示例 26.10.19")
         self.sheet_fmt_edit.setToolTip(
-            "占位符：yyyy=四位年  yy=两位年  MM=月  dd=日\n"
-            "例：yy.MM.dd -> 26.10.19；yyyy-MM-dd -> 2026-10-19")
+            "占位符：YYYY=四位年  YY=两位年  MM=月  DD=日\n"
+            "例：YY.MM.DD -> 26.10.19；YYYY-MM-DD -> 2026-10-19")
         eform.addRow("工作表名称格式", self.sheet_fmt_edit)
         self.export_mode_combo.currentIndexChanged.connect(
             self._sync_export_mode)

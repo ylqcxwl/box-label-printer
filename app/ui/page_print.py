@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDateEdit, QFileDialog,
                              QVBoxLayout, QWidget)
 
 from app.core.print_data import build_label_data
+from app.core.print_service import PrintService
 from app.core import listconfig
 from app.core import rules as rule_engine
 from app.core.bartender import (BarTender, PrintError, resolve_printer,
@@ -42,43 +43,23 @@ BOX_NO_FONT_MAX = 52
 BOX_NO_FONT_MIN = 22
 
 
-class PrintWorker(QThread):
-    """打印线程（避免 COM 调用阻塞界面）。"""
-    ok = pyqtSignal(str, list)   # box_no, [(seq, sn), ...]
-    fail = pyqtSignal(str)
-
-    def __init__(self, bartender: BarTender, template: Path,
-                 data: Dict[str, str], printer: str, box_no: str,
-                 sn_pairs: list):
-        super().__init__()
-        self._bt = bartender
-        self._template = template
-        self._data = data
-        self._printer = printer
-        self._box_no = box_no
-        self._sn_pairs = sn_pairs
-
-    def run(self) -> None:
-        try:
-            self._bt.print_label(self._template, self._data,
-                                 self._printer or None, copies=1)
-            self.ok.emit(self._box_no, self._sn_pairs)
-        except PrintError as exc:
-            self.fail.emit(str(exc))
-        except Exception as exc:
-            self.fail.emit(f"打印异常：{exc}")
-
-
 class PrintPage(QWidget):
     """打印标签页。"""
 
-    def __init__(self, db: DB, bartender: BarTender, parent=None):
+    def __init__(self, db: DB, bartender: BarTender, parent=None,
+                 print_service=None):
         super().__init__(parent)
         self.db = db
         self.bartender = bartender
         self.products: List[Dict] = []
         self.current: Optional[Dict] = None
-        self._worker: Optional[PrintWorker] = None
+        # ★ 打印走常驻线程（见 app/core/print_service.py）：
+        #   每次新建 QThread 会让 BarTender 的 COM 连接跨线程复用而报错。
+        #   主窗口会传一个共享的服务进来；单独构造时（如测试）自己建一个。
+        self._own_service = print_service is None
+        self.print_service = print_service or PrintService(bartender, self)
+        # 本页提交出去、还没回调的打印任务号
+        self._my_tasks: set = set()
         self._last_print_ok = False
         self._build_ui()
         self.reload()
@@ -694,7 +675,7 @@ class PrintPage(QWidget):
         if not self.current:
             QMessageBox.warning(self, "提示", "请先选择产品")
             return
-        if self._worker and self._worker.isRunning():
+        if self._my_tasks:          # 上一次还在打印中
             return
         sns = [self.sn_table.item(r, 2).text()
                for r in range(self.sn_table.rowCount())]
@@ -744,12 +725,25 @@ class PrintPage(QWidget):
         sn_pairs = list(enumerate(sns, start=1))
         self.manual_btn.setEnabled(False)
         self.manual_btn.setText("打印中…")
-        self._worker = PrintWorker(
-            self.bartender, template_path, data,
-            resolve_printer(self.db.get_setting("default_printer", "")), box_no, sn_pairs)
-        self._worker.ok.connect(self._on_print_ok)
-        self._worker.fail.connect(self._on_print_fail)
-        self._worker.start()
+        task_id = self.print_service.submit(
+            template_path, data,
+            resolve_printer(self.db.get_setting("default_printer", "")),
+            box_no, tag=sn_pairs)
+        self._my_tasks.add(task_id)
+
+    def _on_service_done(self, task_id: int, box_no: str, tag) -> None:
+        """打印服务回调：只处理本页提交的任务。"""
+        if task_id not in self._my_tasks:
+            return
+        self._my_tasks.discard(task_id)
+        self._on_print_ok(box_no, tag or [])
+
+    def _on_service_failed(self, task_id: int, msg: str) -> None:
+        """打印服务失败回调：只处理本页提交的任务。"""
+        if task_id not in self._my_tasks:
+            return
+        self._my_tasks.discard(task_id)
+        self._on_print_fail(msg)
 
     def _on_print_ok(self, box_no: str, sn_pairs: list) -> None:
         p = self._pending

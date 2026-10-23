@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (QApplication, QDateEdit, QFileDialog, QFrame,
 from app.core import excel_io, listconfig
 from app.core.excel_io import cell_text
 from app.core.print_data import build_label_data
+from app.core.print_service import PrintService
 from app.core.bartender import (BarTender, resolve_printer,
                                template_path as template_path_abs)
 from app.core.db import DB, KIND_PRINT
@@ -78,29 +79,6 @@ class RecordRowDelegate(QStyledItemDelegate):
         super().paint(painter, option, index)
 
 
-class ReprintWorker(QThread):
-    """重打印线程。"""
-    ok = pyqtSignal(str)
-    fail = pyqtSignal(str)
-
-    def __init__(self, bartender: BarTender, template: Path,
-                 data: Dict[str, str], printer: str, box_no: str):
-        super().__init__()
-        self._bt = bartender
-        self._template = template
-        self._data = data
-        self._printer = printer
-        self._box_no = box_no
-
-    def run(self) -> None:
-        try:
-            self._bt.print_label(self._template, self._data,
-                                 self._printer or None, copies=1)
-            self.ok.emit(self._box_no)
-        except Exception as exc:
-            self.fail.emit(str(exc))
-
-
 def default_record_columns(db: DB) -> List[Dict[str, Any]]:
     """打印记录默认列（基础列 + 产品字段列 + 尾部列）。
 
@@ -113,12 +91,17 @@ def default_record_columns(db: DB) -> List[Dict[str, Any]]:
 class RecordsPage(QWidget):
     """打印记录页。"""
 
-    def __init__(self, db: DB, bartender: BarTender, parent=None):
+    def __init__(self, db: DB, bartender: BarTender, parent=None,
+                 print_service=None):
         super().__init__(parent)
         self.db = db
         self.bartender = bartender
+        # ★ 与打印页共用同一个常驻打印线程，避免 BarTender 的 COM
+        #   连接跨线程复用而报「BarTenderApplication.Formats」
+        self._own_service = print_service is None
+        self.print_service = print_service or PrintService(bartender, self)
+        self._my_tasks: set = set()
         self._rows: List[Dict[str, Any]] = []
-        self._worker = None
         self._width_cache: Dict[str, Any] = {}
         # Shift 范围选择的起点：上一次点击过的行号
         self._last_clicked_row: Optional[int] = None
@@ -511,17 +494,31 @@ class RecordsPage(QWidget):
 
         # ★ 与打印页共用同一套组装逻辑，避免两处走偏导致重打印时
         #   BarTender 拿不到值、只能显示模板自带的默认值。
-        #   SN 位数按箱内**实际记录数**（不是快照里的装箱数量），
-        #   这样不满箱的箱子重打时不会在末尾留一串空位。
+        #   ★ 不满箱时要按「装箱数量」把 SN 位填满（多出来的写空串）：
+        #     没传到的 SN 位会保留模板里的示例数据，直接被打印出来。
         sns = [str(r["sn"]) for r in records]
-        data = build_label_data(self.db, snapshot, box_no, sns,
-                                total=len(sns))
+        total = int(snapshot.get("shuliang", 0) or 0) or len(sns)
+        data = build_label_data(self.db, snapshot, box_no, sns, total=total)
 
-        self._worker = ReprintWorker(
-            self.bartender, template_path, data,
-            resolve_printer(self.db.get_setting("default_printer", "")), box_no)
-        self._worker.ok.connect(
-            lambda bn: QMessageBox.information(self, "完成", f"箱号 {bn} 已重新打印"))
-        self._worker.fail.connect(
-            lambda msg: QMessageBox.critical(self, "重打印失败", msg))
-        self._worker.start()
+        task_id = self.print_service.submit(
+            template_path, data,
+            resolve_printer(self.db.get_setting("default_printer", "")),
+            box_no, tag=None)
+        self._my_tasks.add(task_id)
+        self.count_label.setText(f"正在重打 {box_no} …")
+
+    def _on_reprint_done(self, task_id: int, box_no: str, tag) -> None:
+        """重打印成功（只处理本页提交的任务）。"""
+        if task_id not in self._my_tasks:
+            return
+        self._my_tasks.discard(task_id)
+        self.count_label.setText(f"共 {len(self._rows)} 条")
+        QMessageBox.information(self, "完成", f"箱号 {box_no} 已重新打印")
+
+    def _on_reprint_failed(self, task_id: int, msg: str) -> None:
+        """重打印失败（只处理本页提交的任务）。"""
+        if task_id not in self._my_tasks:
+            return
+        self._my_tasks.discard(task_id)
+        self.count_label.setText(f"共 {len(self._rows)} 条")
+        QMessageBox.critical(self, "重打印失败", msg)
