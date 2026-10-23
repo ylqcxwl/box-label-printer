@@ -13,8 +13,17 @@ from typing import Any, Dict, List, Optional
 
 from app.core.db import KIND_PRINT
 
-#: 兼容旧引用保留（现在不再按固定位数填充，见 build_label_data 的说明）
-MAX_SN_SLOTS = 0
+#: 模板上 SN 位的最大数量。程序读不到模板内部结构，只能按一个足够大的
+#: 上限把所有位都填一遍：模板里不存在的位赋值会失败并被忽略，存在的位
+#: 则一定被覆盖。
+MAX_SN_SLOTS = 60
+
+#: 多余位写什么 —— **空串**。
+#: 依据：改坏之前的打印页就是用空串填多余位、结果一直是对的；
+#:      而「完全不赋值」时标签会露出模板里留的示例 SN
+#:      （实测 3PCS 标签第 4 位打出 8001/200111250）。
+#:      所以空串有效，真正的问题只是「要填几位」。
+BLANK_SLOT = ""
 
 
 def build_label_data(db, source: Dict[str, Any], box_no: str,
@@ -46,13 +55,14 @@ def build_label_data(db, source: Dict[str, Any], box_no: str,
         if f["fkey"] == "xianghao":
             data[f["datasource"]] = box_no
     # SN 位：模板里第 1~N 个 SN 分别叫 "1" "2" …
-    # ★★ 只为「实际存在的 SN」建键，多余的位置**一个都不碰**。
-    #   这是拿实物标签对照出来的结论：
-    #     · 打印页直接打印（只给 1~5 建键）→ 后 7 个位置是纯空白 ✓
-    #     · 一旦给第 6~12 位也赋值（哪怕空串、空格）→ BarTender 会把
-    #       模板里留的示例 SN（8001/2001125x）打出来 ✗
-    #   所以这里既不能按装箱数量填、也不能填到某个固定上限。
-    #   total 参数只为兼容旧调用而保留，不再参与位数计算。
-    for i, sn in enumerate(sns, start=1):
-        data[str(i)] = sn
+    # ★★ 必须一直填到模板可能有的最大位数，多余位写空格。
+    #   三张实物标签对照出来的规律：
+    #     · 5PCS / 模板 5 位 / 5 个 SN   -> 刚好填满，看不出问题
+    #     · 3PCS / 模板 4 位 / 3 个 SN   -> 第 4 位打出模板示例 8001/200111250 ✗
+    #     · 重打印 12 位模板 / 5 个 SN    -> 后 7 位打出 8001/2001125x ✗
+    #   => 关键不是「填什么」，而是「填几位」：位数不够（没赋值）就露出
+    #      模板默认值；只要把模板上每一位都赋上值（多余位写空串）就正常。
+    pad_to = max(total or 0, len(sns), MAX_SN_SLOTS)
+    for i in range(pad_to):
+        data[str(i + 1)] = sns[i] if i < len(sns) else BLANK_SLOT
     return data

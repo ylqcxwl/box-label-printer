@@ -170,7 +170,7 @@ class BarTender:
                 except Exception:
                     pass  # 老版本 BarTender 部分属性不可写，忽略
             # 仅在内存中给命名数据源赋值，模板文件保持不变
-            # ★ 空值保持空串（与已验证正确的打印页行为一致）
+            # 空值保持空串：改坏之前的打印页就是用空串填多余位、结果正确
             missing: List[str] = []
             for key, value in data.items():
                 try:
