@@ -13,6 +13,16 @@ from typing import Any, Dict, List, Optional
 
 from app.core.db import KIND_PRINT
 
+#: 模板上 SN 位的最大数量。程序读不到模板内部结构，
+#: 索性按这个上限把所有位都填一遍：模板里不存在的位赋值会失败并被忽略，
+#: 存在的位则一定被覆盖，不会漏出模板自带的示例数据。
+MAX_SN_SLOTS = 40
+
+#: 空位写什么。★ 不能写空串：BarTender 对空串赋值会当成「不设置」，
+#: 位置保留模板里的示例值（实测会打出多余的示例 SN 条码）。
+#: 写一个空格才能确实覆盖，打出来是空白。
+BLANK_SLOT = " "
+
 
 def build_label_data(db, source: Dict[str, Any], box_no: str,
                      sns: List[str], total: Optional[int] = None
@@ -43,7 +53,11 @@ def build_label_data(db, source: Dict[str, Any], box_no: str,
         if f["fkey"] == "xianghao":
             data[f["datasource"]] = box_no
     # SN 位：模板里第 1~N 个 SN 分别叫 "1" "2" …
-    pad_to = total if total else len(sns)
+    # ★ 必须填到「模板可能有的最大位数」，不能用产品的装箱数量：
+    #   产品装箱数可能比模板位数少（例如装箱 5 个、模板上却有 12 个位），
+    #   少填的那几位不会被赋值，BarTender 就保留模板自带的示例 SN 打出来
+    #   （实测照片：5PCS 的标签后面多打出了 7 个模板示例条码）。
+    pad_to = max(total or 0, len(sns), MAX_SN_SLOTS)
     for i in range(pad_to):
-        data[str(i + 1)] = sns[i] if i < len(sns) else ""
+        data[str(i + 1)] = sns[i] if i < len(sns) else BLANK_SLOT
     return data
