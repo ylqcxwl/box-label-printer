@@ -111,6 +111,8 @@ class BarTender:
     def __init__(self, mock: bool = False):
         self.mock = mock
         self._app = None
+        # 上一次打印时模板里不存在的数据源名（用于排查「某字段打不出来」）
+        self._last_missing: List[str] = []
 
     @staticmethod
     def available() -> bool:
@@ -168,11 +170,18 @@ class BarTender:
                 except Exception:
                     pass  # 老版本 BarTender 部分属性不可写，忽略
             # 仅在内存中给命名数据源赋值，模板文件保持不变
+            # ★ 空值保持写**空串**：打印页手动打印不满箱时就是这么做的，
+            #   实测结果正确 —— 说明 BarTender 能接受空串并覆盖模板值。
+            missing: List[str] = []
             for key, value in data.items():
                 try:
-                    fmt.SetNamedSubStringValue(str(key), "" if value is None else str(value))
+                    fmt.SetNamedSubStringValue(str(key),
+                                              "" if value is None else str(value))
                 except Exception:
-                    pass  # 模板中不存在该数据源时跳过
+                    # 模板里没有这个数据源（字段映射没配到）时跳过，
+                    # 记录下来便于排查「某个字段怎么打不出来」
+                    missing.append(str(key))
+            self._last_missing = missing
             fmt.PrintOut(False, False)
         except PrintError:
             raise
