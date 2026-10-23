@@ -498,6 +498,13 @@ class RecordsPage(QWidget):
         total = self._box_capacity(records[0], snapshot, len(sns))
         data = build_label_data(self.db, snapshot, box_no, sns, total=total)
 
+        task_id = self.print_service.submit(
+            template_path, data,
+            resolve_printer(self.db.get_setting("default_printer", "")),
+            box_no, tag=None)
+        self._my_tasks.add(task_id)
+        self.count_label.setText(f"正在重打 {box_no} …")
+
     def _box_capacity(self, record: Dict[str, Any], snapshot: Dict[str, Any],
                       sn_count: int) -> int:
         """重打印时该填几个 SN 位。
@@ -519,13 +526,6 @@ class RecordsPage(QWidget):
             if num > 0:
                 return num
         return sn_count
-
-        task_id = self.print_service.submit(
-            template_path, data,
-            resolve_printer(self.db.get_setting("default_printer", "")),
-            box_no, tag=None)
-        self._my_tasks.add(task_id)
-        self.count_label.setText(f"正在重打 {box_no} …")
 
     def _on_reprint_done(self, task_id: int, box_no: str, tag) -> None:
         """重打印成功（只处理本页提交的任务）。"""
