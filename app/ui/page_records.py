@@ -476,10 +476,24 @@ class RecordsPage(QWidget):
 
     def _reprint_box(self) -> None:
         rows = self._selected_rows()
-        if len(rows) != 1:
-            QMessageBox.information(self, "提示", "请勾选一条记录（按整箱重打印）")
+        if not rows:
+            QMessageBox.information(
+                self, "提示",
+                "请先勾选一条记录（勾哪一条都行，重打印按整箱进行）")
             return
-        box_no = self._rows[rows[0]]["box_no"]
+        # ★ 重打印是「按整箱」的，所以只要勾的记录都在同一个箱里就没问题：
+        #   原来一律要求「只能勾一条」，用户勾了同箱的两行也会被拦住，
+        #   提示还写成「请勾选一条记录」，很像没识别到勾选。
+        boxes = {self._rows[r]["box_no"] for r in rows}
+        if len(boxes) > 1:
+            preview = "、".join(sorted(boxes)[:4])
+            more = f" 等 {len(boxes)} 个箱" if len(boxes) > 4 else ""
+            QMessageBox.information(
+                self, "提示",
+                f"勾选的记录分属不同的箱：\n{preview}{more}\n\n"
+                "重打印按整箱进行，请只勾选同一个箱的记录。")
+            return
+        box_no = boxes.pop()
         records = self.db.records_by_box(box_no)
         if not records:
             QMessageBox.warning(self, "错误", "未找到该箱记录")
