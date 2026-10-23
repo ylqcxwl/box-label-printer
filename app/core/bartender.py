@@ -170,15 +170,12 @@ class BarTender:
                 except Exception:
                     pass  # 老版本 BarTender 部分属性不可写，忽略
             # 仅在内存中给命名数据源赋值，模板文件保持不变
-            # ★ 空值一律写**一个空格**，不能写空串：
-            #   BarTender 收到空串会当成「不设置」，那个位置就保留模板自带
-            #   的示例内容 —— 实测照片里 5 个 SN 的箱子后面多打出了 7 个
-            #   模板示例条码。写空格才能真正覆盖，打出来是空白。
+            # ★ 空值保持空串（与已验证正确的打印页行为一致）
             missing: List[str] = []
             for key, value in data.items():
-                text = str(value) if value not in (None, "") else " "
                 try:
-                    fmt.SetNamedSubStringValue(str(key), text)
+                    fmt.SetNamedSubStringValue(
+                        str(key), "" if value is None else str(value))
                 except Exception:
                     # 模板里没有这个数据源（字段映射没配到）时跳过，
                     # 记录下来便于排查「某个字段怎么打不出来」
