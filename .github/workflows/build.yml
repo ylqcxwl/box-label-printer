@@ -100,13 +100,15 @@ jobs:
         shell: pwsh
         run: |
           $ver = $env:VERSION
-          Compress-Archive -Path "dist\标签打印\*" -DestinationPath "标签打印_v${ver}.zip" -Force
+          # ★ Release 资产名必须用 ASCII：GitHub 会静默剥掉非 ASCII 字符，
+          #   用中文名会得到 "_v1.0.0.zip" 这种残缺文件名。
+          Compress-Archive -Path "dist\标签打印\*" -DestinationPath "BoxLabelPrinter_v${ver}.zip" -Force
 
       - name: 上传产物（Artifact v4）
         uses: actions/upload-artifact@v4
         with:
-          name: 标签打印_v${{ env.VERSION }}
-          path: 标签打印_v${{ env.VERSION }}.zip
+          name: BoxLabelPrinter_v${{ env.VERSION }}
+          path: BoxLabelPrinter_v${{ env.VERSION }}.zip
           retention-days: 30
           if-no-files-found: error
 
@@ -132,7 +134,8 @@ jobs:
         run: |
           $ver  = $env:VERSION
           $tag  = "v$ver"
-          $zip  = "标签打印_v$ver.zip"
+          # 与压缩步骤保持一致（ASCII 资产名，中文会被 GitHub 剥掉）
+          $zip  = "BoxLabelPrinter_v$ver.zip"
           $repo = "${{ github.repository }}"
           # 同版本重复打包时先删旧 Release，避免 422 already_exists
           gh release view $tag --repo $repo 2>$null | Out-Null
