@@ -1,6 +1,7 @@
 name: 打包标签打印程序
 
-# 仅允许手动触发（一键打包）；提交代码不会产生任何工作流运行
+# 触发方式：① 手动一键打包 ② 修改 version.txt 自动打包并发布到 Releases
+# 普通代码提交不会触发；工作流自己回写版本号时带 [skip ci]，避免循环
 on:
   workflow_dispatch:
     inputs:
@@ -9,9 +10,14 @@ on:
         required: false
         default: ""
         type: string
+  # ★ 改 version.txt 即自动打包并发布到 Releases（版本号直接取文件里的值）。
+  #   工作流自己回写版本号时 commit 带 [skip ci]，不会再次触发，避免死循环。
+  push:
+    paths:
+      - "version.txt"
 
 permissions:
-  contents: write      # 回写版本号
+  contents: write      # 回写版本号 + 创建 Release / tag
   actions: write       # 清理历史运行记录
   packages: none
 
@@ -35,11 +41,18 @@ jobs:
           $inputVer = "${{ inputs.version }}".Trim()
           if ($inputVer -match '^\d+\.\d+\.\d+$') {
               $ver = $inputVer
+          } elseif ("${{ github.event_name }}" -eq "push") {
+              # 由 version.txt 改动触发：文件里写什么版本就打什么版本
+              $ver = (Get-Content version.txt -Raw).Trim()
           } else {
+              # 手动触发且留空：在现有版本基础上迭代修订号
               $cur = (Get-Content version.txt -Raw).Trim()
               $parts = $cur.Split('.')
               $parts[2] = [string]([int]$parts[2] + 1)
               $ver = $parts -join '.'
+          }
+          if ($ver -notmatch '^\d+\.\d+\.\d+$') {
+              throw "版本号不合法：$ver"
           }
           echo "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "本次打包版本：$ver"
@@ -110,6 +123,34 @@ jobs:
           } else {
               Write-Host "版本号无变化，跳过提交"
           }
+
+      # ---------- 自动发布到 Releases ----------
+      - name: 发布到 Releases
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ver  = $env:VERSION
+          $tag  = "v$ver"
+          $zip  = "标签打印_v$ver.zip"
+          $repo = "${{ github.repository }}"
+          # 同版本重复打包时先删旧 Release，避免 422 already_exists
+          gh release view $tag --repo $repo 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+              gh release delete $tag --repo $repo --yes --cleanup-tag
+          }
+          $notes = @(
+              "## 外箱标签打印程序 v$ver",
+              "",
+              "- 打包环境：GitHub Actions / Windows Server 2022 / Python 3.8 x86（Win7 兼容）",
+              "- 产物：$zip（PyInstaller onedir）",
+              "- 基于提交：${{ github.sha }}",
+              "",
+              "下载后解压到任意目录，运行「标签打印.exe」即可；模板放在 data/templates 下。"
+          ) -join "`n"
+          gh release create $tag $zip --repo $repo --target main `
+              --title "外箱标签打印程序 v$ver" --notes $notes
+          Write-Host "已发布 Release $tag，资产：$zip"
 
       # ---------- 只保留最新 2 条本工作流的运行记录 ----------
       - name: 清理历史运行记录（保留最新 2 条）
