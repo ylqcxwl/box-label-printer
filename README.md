@@ -5,7 +5,7 @@
 **扫码录入 SN → 自动拼装箱号 → 调用 BarTender 模板打印外箱标签**
 
 [![Release](https://img.shields.io/github/v/release/ylqcxwl/box-label-printer?label=Release&color=0066CC)](https://github.com/ylqcxwl/box-label-printer/releases/latest)
-[![Build](https://github.com/ylqcxwl/box-label-printer/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/ylqcxwl/box-label-printer/actions/workflows/build.yml)
+[![Build](https://img.shields.io/github/actions/workflow/status/ylqcxwl/box-label-printer/build.yml?branch=main&label=Build)](https://github.com/ylqcxwl/box-label-printer/actions/workflows/build.yml)
 [![Downloads](https://img.shields.io/github/downloads/ylqcxwl/box-label-printer/total?label=Downloads&color=0066CC)](https://github.com/ylqcxwl/box-label-printer/releases)
 [![Last Commit](https://img.shields.io/github/last-commit/ylqcxwl/box-label-printer?label=Updated)](https://github.com/ylqcxwl/box-label-printer/commits/main)
 
