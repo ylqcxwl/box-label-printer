@@ -39,3 +39,9 @@ assets/arrow_*.png
 # 系统文件
 Thumbs.db
 .DS_Store
+
+# 运行时/导出数据（含打印记录、产品信息、SN），禁止提交
+打印记录.xlsx
+*.xlsx
+*.db
+*.db-journal
