@@ -109,22 +109,28 @@
 
 ## 数据与目录结构
 
-程序首次运行自动创建 `data/`，**整个程序目录复制走即可迁移**：
+**根目录只保留 3 项**：启动文件、用户数据目录、运行依赖目录。其余文件全部归到
+`runtime/`，不会散落在根目录。整个程序目录复制走即可迁移。
 
 ```
 标签打印/
-├── 标签打印.exe
-├── assets/                  # 图标资源
-└── data/
-    ├── label_printer.db     # 产品、规则、字段映射、系统设置
-    ├── records/             # 打印记录，按年一个库文件
-    │   └── records_2026.db
-    ├── templates/           # .btw 模板
-    ├── backup/              # 自动备份 zip
-    ├── custom_logo.png      # 自定义图标（可选）
-    └── print_log.txt
+├── 标签打印.exe            # 唯一的程序启动文件（桌面快捷方式指向它）
+├── data/                   # 用户数据（升级时保留此目录即可）
+│   ├── label_printer.db    # 产品、规则、字段映射、系统设置
+│   ├── records/            # 打印记录，按年一个库文件
+│   │   └── records_2026.db
+│   ├── templates/          # .btw 模板放这里
+│   ├── assets/             # 运行时生成的界面小图标
+│   ├── backup/             # 自动备份 zip
+│   ├── custom_logo.png     # 自定义图标（可选）
+│   └── print_log.txt
+└── runtime/                # 所有依赖：Python DLL / PYD / Qt 插件 / 内置图标
+    └── assets/             # 随包资源（logo.png、logo.ico）
 ```
 
+> ⚠️ `runtime/` 是程序运行依赖，**不要删除或改动**；升级时只替换
+> `标签打印.exe` 与 `runtime/`，`data/` 原样保留即可，数据不会丢。
+>
 > 记录按年分库，避免单文件过大；查询时自动合并跨年数据。
 
 <details>
@@ -168,10 +174,15 @@ tools/                       图标生成 / 启动脚本 / 发布辅助脚本
 | 手动 | Actions → 「打包标签打印程序」→ Run workflow | 填 `1.0.3` 指定；留空则自动迭代修订号 |
 
 工作流会自动：写入版本号到源码与 exe 文件属性 → 生成图标 → PyInstaller 打包 →
-压缩为 `BoxLabelPrinter_vX.Y.Z.zip` → **自动创建 GitHub Release 并附上安装包** →
+**校验产物目录结构**（根目录只允许启动文件 / `data/` / `runtime/`，不符直接失败）→
+预建 `data/templates/` → 压缩为 `BoxLabelPrinter_vX.Y.Z.zip` →
+**自动创建 GitHub Release 并附上安装包** →
 回写版本号（带 `[skip ci]`，避免循环触发）→ 只保留最新 2 条运行记录。
 
 > Release 资产名必须用 ASCII：GitHub 会静默剥掉资产名里的中文。
+>
+> 目录归集依赖 PyInstaller 6.x 的 `contents_directory`（见 `标签打印.spec`）。
+> 5.x 的 bootloader 只认 exe 同目录的 DLL，**不能简单把文件移进子目录**。
 
 **本地打包**（需 Python 3.8.10 32 位）：
 
@@ -225,7 +236,7 @@ build.bat
 | 界面 | PyQt5 5.15.10（无边框窗口、自绘图标与按钮） |
 | 数据 | SQLite（主库 + 按年分库）、openpyxl 3.1.2 |
 | 打印 | BarTender 10.0+ COM（pywin32 306） |
-| 打包 | PyInstaller 5.13.2（onedir / 32 位 / Win7 兼容） |
+| 打包 | PyInstaller 6.11.1（onedir + `contents_directory=runtime` / 32 位 / Win7 兼容） |
 | 图标 | Pillow 9.5.0（仅构建期生成资源） |
 
 ---

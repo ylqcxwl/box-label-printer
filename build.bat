@@ -16,7 +16,10 @@ pyinstaller --clean --noconfirm 标签打印.spec || goto :error
 
 echo.
 echo ============================================
-echo  打包完成：dist\标签打印\标签打印.exe
+echo  打包完成：dist\标签打印\
+echo    标签打印.exe  启动文件
+echo    data\         用户数据
+echo    runtime\      运行依赖（勿删）
 echo ============================================
 pause
 exit /b 0

@@ -4,7 +4,6 @@
 logo 优先使用 assets/logo.png 或用户自定义 logo，绘制版仅作兜底。
 """
 
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -13,8 +12,7 @@ from PyQt5.QtGui import (QBrush, QColor, QIcon, QPainter, QPainterPath, QPen,
                          QPixmap)
 from PyQt5.QtWidgets import QFileDialog, QWidget
 
-from app.config import (ASSETS_WRITE_DIR, CUSTOM_LOGO, DATA_DIR,
-                       DEFAULT_LOGO)
+from app.config import ASSETS_WRITE_DIR, CUSTOM_LOGO, DEFAULT_LOGO
 
 
 def _pixmap(size: int) -> tuple:
@@ -134,29 +132,22 @@ _WRITABLE_ASSETS: Optional[Path] = None
 
 
 def arrow_dir() -> Path:
-    """箭头等运行时生成图片的存放目录。
+    """箭头等运行时生成图片的存放目录（data/assets）。
 
-    首选程序根目录下的 assets（与 logo.ico / logo.png 同一个文件夹，
-    需求：原来 data/assets 与根目录 assets 同名，已合并）。
+    ★ 放在用户数据目录而不是程序根目录：根目录约定只保留
+      启动文件 + data/ + runtime/，多出一个 assets/ 会破坏该结构。
+      源码运行时 ASSETS_WRITE_DIR 同样指向 ROOT/data/assets。
 
-    ★ 打包后如果装在 Program Files 这类只读位置，根目录 assets 写不进去，
-      这时退回 data/assets —— 找不到可写目录也不报错，调用方只需按返回的
-      路径去用，文件不存在时下拉框就是没有箭头，不影响其它功能。
+    目录创建失败也不抛异常——调用方拿不到箭头只是下拉框没有小图标，
+    不影响其它功能。
     """
     global _WRITABLE_ASSETS
     if _WRITABLE_ASSETS is not None:
         return _WRITABLE_ASSETS
-    for candidate in (ASSETS_WRITE_DIR, DATA_DIR / "assets"):
-        try:
-            candidate.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            continue
-        # ★ 用 os.access 判断可写，不再「写一个探针文件再删掉」：
-        #   某些环境（如沙箱 / 杀软）会拦截删除，导致误判成不可写，
-        #   进而把生成的箭头图标错误地丢到 data/assets 里。
-        if os.access(str(candidate), os.W_OK):
-            _WRITABLE_ASSETS = candidate
-            return candidate
+    try:
+        ASSETS_WRITE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     _WRITABLE_ASSETS = ASSETS_WRITE_DIR
     return _WRITABLE_ASSETS
 
@@ -165,8 +156,8 @@ def ensure_arrow_png(color: str = "#5A6068", size: int = 16,
                      direction: str = "down") -> Path:
     """生成箭头图片（供下拉框 / 日期框 / 微调框使用），返回其绝对路径。
 
-    图片写入程序根目录下的 assets；若该目录不可写（打包后装在只读位置）
-    则退回 data/assets。打包资源目录 _MEIPASS 是只读临时目录，不往里写。
+    图片写入 data/assets（用户数据目录，永远可写），不往程序根目录或
+    runtime/ 随包资源目录写；后者在只装位置可能不可写。
 
     Args:
         direction: "down"（默认，下拉箭头）或 "up"（微调框上箭头）

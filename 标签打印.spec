@@ -1,18 +1,29 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包配置（onedir 模式：启动快、允许多文件、纯绿色）。
+"""PyInstaller 打包配置（onedir + contents_directory）。
 
-打包产物：dist/标签打印/标签打印.exe（整个目录复制到任何电脑即可运行）
+目录结构（★ 需求：根目录只留启动文件与 data/，其余全部归到单独文件夹）：
+
+    标签打印/
+    ├── 标签打印.exe        # 唯一的程序启动文件
+    ├── data/               # 用户数据（模板、数据库、备份、记录）
+    └── runtime/            # 所有依赖：DLL/PYD/Qt 插件/assets 图标
+
+★ 为什么必须用 PyInstaller 6.x：
+  5.x 的 bootloader 只会在 exe 同目录查找 DLL，硬把文件挪进子目录会
+  导致程序打不开。6.x 引入 contents_directory，bootloader 会正确地把
+  依赖目录加入搜索路径，且 sys._MEIPASS 指向该子目录。
 """
 
 import struct
 
 from PyInstaller.utils.hooks import collect_submodules
 
-block_cipher = None
-
 # 目标架构跟随所用解释器：32 位 Python -> x86（Win7 兼容），
 # 64 位 Python -> 自动（x86_64）。这样同一份 spec 在 CI（x86）与本地（x64）都能用。
 TARGET_ARCH = 'x86' if struct.calcsize('P') * 8 == 32 else None
+
+# 依赖与资源统一放在这个文件夹里，保持程序根目录整洁
+CONTENTS_DIR = 'runtime'
 
 hiddenimports = (
     collect_submodules('win32com') + [
@@ -29,7 +40,8 @@ a = Analysis(
     ['app/main.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets')],
+    # 只带真正的运行资源：源图和运行时生成的箭头都不必进包
+    datas=[('assets/logo.png', 'assets'), ('assets/logo.ico', 'assets')],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -42,13 +54,10 @@ a = Analysis(
         'PyQt5.QtSql', 'PyQt5.QtTest', 'PyQt5.QtXml', 'PyQt5.Qt3DCore',
         'tkinter', 'numpy', 'pandas', 'matplotlib',
     ],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
     noarchive=False,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
@@ -63,6 +72,7 @@ exe = EXE(
     console=False,           # 无控制台窗口
     disable_windowed_traceback=False,
     target_arch=TARGET_ARCH,  # 解释器是 32 位 -> x86（Win7 兼容）；64 位 -> 跟随
+    contents_directory=CONTENTS_DIR,
     icon='assets/logo.ico',
     version='file_version_info.txt',
 )
@@ -70,7 +80,6 @@ exe = EXE(
 coll = COLLECT(
     exe,
     a.binaries,
-    a.zipfiles,
     a.datas,
     strip=False,
     upx=False,

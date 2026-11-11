@@ -96,10 +96,43 @@ jobs:
       - name: PyInstaller 打包
         run: pyinstaller --clean --noconfirm 标签打印.spec
 
+      - name: 校验产物目录结构
+        shell: pwsh
+        run: |
+          # ★ 目录约定：根目录只保留 启动文件 + data/ + runtime/。
+          #   如果升级 PyInstaller 后布局变了，宁可在这里失败，也不发坏包。
+          $root = "dist\标签打印"
+          $items = @(Get-ChildItem -LiteralPath $root -Force | Select-Object -ExpandProperty Name)
+          Write-Host "产物根目录: $($items -join ', ')"
+          $allowed = @('标签打印.exe', 'data', 'runtime')
+          $unexpected = @($items | Where-Object { $_ -notin $allowed })
+          if ($unexpected.Count -gt 0) {
+              throw "产物根目录出现预期外的项: $($unexpected -join ', ')"
+          }
+          foreach ($must in @('标签打印.exe', 'runtime')) {
+              if (-not (Test-Path -LiteralPath (Join-Path $root $must))) {
+                  throw "缺少必需项: $must"
+              }
+          }
+          $runtimeCount = @(Get-ChildItem -LiteralPath (Join-Path $root 'runtime') -Force).Count
+          Write-Host "runtime/ 内条目数: $runtimeCount"
+          if ($runtimeCount -lt 10) {
+              throw "runtime/ 内容过少，依赖可能没有正确归集"
+          }
+          Write-Host "目录结构校验通过"
+
       - name: 压缩打包产物
         shell: pwsh
         run: |
           $ver = $env:VERSION
+          # ★ data/ 原本是程序首次运行才创建的，这里预先建好，
+          #   让用户解压后立刻能看到「模板放这里」的目录，不用先启动一次。
+          #   放一个说明文件，避免空目录被 Compress-Archive 忽略。
+          $dataDir = "dist\标签打印\data"
+          New-Item -ItemType Directory -Force -Path "$dataDir\templates" | Out-Null
+          Set-Content -LiteralPath "$dataDir\templates\把 btw 模板放这里.txt" `
+              -Value "把你的 .btw 打印模板放在本目录；也可在 设置-系统设置 里改成其它路径。" `
+              -Encoding utf8
           # ★ Release 资产名必须用 ASCII：GitHub 会静默剥掉非 ASCII 字符，
           #   用中文名会得到 "_v1.0.0.zip" 这种残缺文件名。
           Compress-Archive -Path "dist\标签打印\*" -DestinationPath "BoxLabelPrinter_v${ver}.zip" -Force

@@ -43,7 +43,12 @@ def resolve_template_dir(setting: str = "") -> Path:
 
 
 def assets_dir() -> Path:
-    """返回资源目录（PyInstaller 打包后位于 _MEIPASS 临时目录）。"""
+    """返回只读资源目录（打包后为 contents_directory 里的 assets）。
+
+    PyInstaller 6.x 用 contents_directory='runtime' 时，sys._MEIPASS
+    指向 <程序根目录>/runtime，所以 assets 会落在 runtime/assets，
+    正好满足「根目录只保留 exe + data + 一个文件夹」的要求。
+    """
     base = Path(getattr(sys, "_MEIPASS", ROOT))
     return base / "assets"
 
@@ -52,11 +57,12 @@ ASSETS_DIR: Path = assets_dir()
 DEFAULT_LOGO: Path = ASSETS_DIR / "logo.png"
 CUSTOM_LOGO: Path = DATA_DIR / "custom_logo.png"
 
-# 运行时「生成」的图片（如下拉箭头）统一放到程序根目录下的 assets，
-# 与 logo.ico / logo.png 合并到一个文件夹，不再另起 data/assets。
-# 注意与 ASSETS_DIR 区分：ASSETS_DIR 打包后指向只读的 _MEIPASS，
-# 这个才是可写的（打包后 = exe 所在目录）。
-ASSETS_WRITE_DIR: Path = ROOT / "assets"
+# 运行时「生成」的图片（下拉/微调框箭头）放到 data/assets。
+# ★ 不能放程序根目录：根目录约定只保留 启动文件 + data/ + runtime/，
+#   在根目录再建 assets/ 会破坏这个结构。
+# 与 ASSETS_DIR 区分：ASSETS_DIR 打包后指向 runtime/assets（随包资源），
+# 这里是用户数据目录，永远可写。
+ASSETS_WRITE_DIR: Path = DATA_DIR / "assets"
 
 
 def ensure_dirs() -> None:

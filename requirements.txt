@@ -4,7 +4,10 @@ pywin32==306
 openpyxl==3.1.2
 
 # 打包依赖
-pyinstaller==5.13.2
+# ★ 必须用 6.x：5.x 的 bootloader 只认 exe 同目录的 DLL，无法把依赖
+#   归到单独文件夹；6.x 的 contents_directory 才能做到「根目录只留 exe + data」。
+#   6.11.1 支持 Python 3.8~3.13，且提供 win32 wheel（CI 是 3.8 x86 / Win7 兼容）。
+pyinstaller==6.11.1
 
 # 构建期依赖：tools/make_icons.py 生成 assets/logo.png / logo.ico 时用。
 # 程序运行时不依赖它（界面图标是 Qt 的 QPixmap 现画的），
